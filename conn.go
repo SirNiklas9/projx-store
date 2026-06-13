@@ -1,0 +1,61 @@
+package store
+
+// sqlConn is the minimal SQL primitive the SQLite store sits on — exec for writes,
+// query for reads (rows as [][]any, columns positional). It is the seam that lets
+// the store run TWO ways from one schema: locally on modernc.org/sqlite (native
+// build) or as a Pulp cell calling the host's storage.sqlite capability (wasm
+// build). Neither the store logic nor the migrations know which backend they have.
+type sqlConn interface {
+	exec(query string, args ...any) error
+	query(query string, args ...any) ([][]any, error)
+	close() error
+}
+
+// asText coerces a driver/msgpack cell value to string. SQLite TEXT comes back as
+// string from modernc and as string from msgpack, but []byte is possible on either
+// path, so both are handled; anything else (incl. nil) becomes "".
+func asText(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	default:
+		return ""
+	}
+}
+
+// asInt coerces a driver/msgpack cell value to int. SQLite INTEGER arrives as int64
+// from modernc; msgpack may decode it as int64/uint64/int. All are handled.
+func asInt(v any) int {
+	switch t := v.(type) {
+	case int64:
+		return int(t)
+	case uint64:
+		return int(t)
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case uint32:
+		return int(t)
+	case float64:
+		return int(t)
+	default:
+		return 0
+	}
+}
+
+// rowToRecord maps a 5-column row (id, kind, scope, rkey, body) to a Record.
+func rowToRecord(row []any) Record {
+	if len(row) < 5 {
+		return Record{}
+	}
+	return Record{
+		ID:    asText(row[0]),
+		Kind:  Kind(asInt(row[1])),
+		Scope: Scope(asInt(row[2])),
+		Key:   asText(row[3]),
+		Body:  asText(row[4]),
+	}
+}

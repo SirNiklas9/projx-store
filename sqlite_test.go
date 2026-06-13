@@ -128,7 +128,7 @@ func TestSQLiteOpenIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if err := migrate(s.db); err != nil {
+	if err := migrate(s.c); err != nil {
 		t.Errorf("re-migrate: %v", err)
 	}
 	s.Close()
