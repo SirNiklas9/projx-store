@@ -7,7 +7,11 @@
 // shape (maximal interface, minimal obligation). An in-memory impl backs it today.
 package store
 
-import "errors"
+import (
+	"errors"
+	"sync"
+	"time"
+)
 
 // Scope identifies which physical file a record lives in. THREE scopes across
 // TWO files:
@@ -81,6 +85,38 @@ type Record struct {
 	Scope Scope
 	Key   string
 	Body  string
+	// UpdatedAt is the last-write clock (0 = unknown), unix-MILLIS-based but guaranteed
+	// strictly increasing per store (see stamp). Millis (not seconds) + the monotonic
+	// guarantee mean two edits in the same instant never tie — important because the wasm
+	// cell's wall clock can be second-resolution. merge/import preserve an incoming value
+	// so last-write-wins holds across machines. Origin = which brain/machine wrote it.
+	UpdatedAt int64
+	Origin    string
+}
+
+// nowMillis returns current unix milliseconds. A package var so tests can pin it.
+var nowMillis = func() int64 { return time.Now().UnixMilli() }
+
+// stamp returns a write timestamp that is STRICTLY INCREASING within this process, based
+// on nowMillis but never repeating or going backwards. This is what makes last-write-wins
+// reliable even when the underlying clock is coarse (e.g. the wasm cell's second-resolution
+// walltime): two rapid writes get t, t+1 rather than an identical value that would tie and
+// force a manual reconcile. Cross-machine, values stay wall-clock-aligned so a genuinely
+// newer edit still wins.
+var (
+	stampMu   sync.Mutex
+	lastStamp int64
+)
+
+func stamp() int64 {
+	stampMu.Lock()
+	defer stampMu.Unlock()
+	t := nowMillis()
+	if t <= lastStamp {
+		t = lastStamp + 1
+	}
+	lastStamp = t
+	return t
 }
 
 // Filter selects records. The zero value matches everything; a non-nil field

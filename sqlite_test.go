@@ -20,6 +20,7 @@ func TestSQLitePutGetDelete(t *testing.T) {
 	s := openSQLite(t)
 	defer s.Close()
 
+	defer pinClock(1000)() // deterministic UpdatedAt stamp (Put stamps fresh writes)
 	r := Record{ID: "r1", Kind: KRecipe, Scope: ScopeGlobal, Key: "commit", Body: "{}"}
 	if err := s.Put(r); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -28,6 +29,7 @@ func TestSQLitePutGetDelete(t *testing.T) {
 	if !ok || got.Key != "commit" {
 		t.Fatalf("Get: ok=%v key=%q", ok, got.Key)
 	}
+	r.UpdatedAt = 1000 // Put stamps the write; expect it on round-trip
 	if got != r {
 		t.Errorf("Get round-trip: got %+v, want %+v", got, r)
 	}

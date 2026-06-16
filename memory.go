@@ -19,6 +19,9 @@ func (m *Mem) Put(r Record) error {
 	if r.ID == "" {
 		return ErrNoID
 	}
+	if r.UpdatedAt == 0 { // mirror SQLite.Put: stamp fresh writes, preserve merged ones
+		r.UpdatedAt = stamp()
+	}
 	m.byID[r.ID] = r
 	return nil
 }

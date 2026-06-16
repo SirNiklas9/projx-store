@@ -35,11 +35,15 @@ func (s *SQLite) Put(r Record) error {
 	if r.ID == "" {
 		return ErrNoID
 	}
+	if r.UpdatedAt == 0 { // fresh write — stamp it; merge/import pass a preserved value
+		r.UpdatedAt = stamp()
+	}
 	if err := s.c.exec(
-		`INSERT INTO records (id, kind, scope, rkey, body) VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO records (id, kind, scope, rkey, body, updated_at, origin) VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, scope = excluded.scope,
-		 rkey = excluded.rkey, body = excluded.body`,
-		r.ID, int64(r.Kind), int64(r.Scope), r.Key, r.Body,
+		 rkey = excluded.rkey, body = excluded.body, updated_at = excluded.updated_at,
+		 origin = excluded.origin`,
+		r.ID, int64(r.Kind), int64(r.Scope), r.Key, r.Body, r.UpdatedAt, r.Origin,
 	); err != nil {
 		return fmt.Errorf("store: put %q: %w", r.ID, err)
 	}
@@ -48,7 +52,7 @@ func (s *SQLite) Put(r Record) error {
 
 // Get returns the record with the given ID, if present.
 func (s *SQLite) Get(id string) (Record, bool) {
-	rows, err := s.c.query(`SELECT id, kind, scope, rkey, body FROM records WHERE id = ?`, id)
+	rows, err := s.c.query(`SELECT id, kind, scope, rkey, body, updated_at, origin FROM records WHERE id = ?`, id)
 	if err != nil || len(rows) == 0 {
 		return Record{}, false
 	}
@@ -66,7 +70,7 @@ func (s *SQLite) Delete(id string) error {
 // List returns all records matching the filter, sorted by ID. The filter is applied
 // as SQL WHERE clauses so results match Mem.List exactly.
 func (s *SQLite) List(f Filter) []Record {
-	query := `SELECT id, kind, scope, rkey, body FROM records`
+	query := `SELECT id, kind, scope, rkey, body, updated_at, origin FROM records`
 	var (
 		clauses []string
 		args    []any

@@ -46,16 +46,22 @@ func asInt(v any) int {
 	}
 }
 
-// rowToRecord maps a 5-column row (id, kind, scope, rkey, body) to a Record.
+// rowToRecord maps a 7-column row (id, kind, scope, rkey, body, updated_at, origin) to a
+// Record. Tolerates 5-column rows (pre-merge-metadata) by leaving UpdatedAt/Origin zero.
 func rowToRecord(row []any) Record {
 	if len(row) < 5 {
 		return Record{}
 	}
-	return Record{
+	r := Record{
 		ID:    asText(row[0]),
 		Kind:  Kind(asInt(row[1])),
 		Scope: Scope(asInt(row[2])),
 		Key:   asText(row[3]),
 		Body:  asText(row[4]),
 	}
+	if len(row) >= 7 {
+		r.UpdatedAt = int64(asInt(row[5]))
+		r.Origin = asText(row[6])
+	}
+	return r
 }
