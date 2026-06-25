@@ -27,6 +27,7 @@ func asText(v any) string {
 
 // asInt coerces a driver/msgpack cell value to int. SQLite INTEGER arrives as int64
 // from modernc; msgpack may decode it as int64/uint64/int. All are handled.
+// Use asInt64 for columns that must not lose the upper 32 bits (e.g. updated_at).
 func asInt(v any) int {
 	switch t := v.(type) {
 	case int64:
@@ -46,6 +47,28 @@ func asInt(v any) int {
 	}
 }
 
+// asInt64 coerces a driver/msgpack cell value to int64 without a narrowing cast.
+// Required for updated_at, which is unix milliseconds and overflows int on 32-bit
+// after year 2038 (int is platform-sized; int64 is always 64-bit).
+func asInt64(v any) int64 {
+	switch t := v.(type) {
+	case int64:
+		return t
+	case uint64:
+		return int64(t)
+	case int:
+		return int64(t)
+	case int32:
+		return int64(t)
+	case uint32:
+		return int64(t)
+	case float64:
+		return int64(t)
+	default:
+		return 0
+	}
+}
+
 // rowToRecord maps a 7-column row (id, kind, scope, rkey, body, updated_at, origin) to a
 // Record. Tolerates 5-column rows (pre-merge-metadata) by leaving UpdatedAt/Origin zero.
 func rowToRecord(row []any) Record {
@@ -60,7 +83,7 @@ func rowToRecord(row []any) Record {
 		Body:  asText(row[4]),
 	}
 	if len(row) >= 7 {
-		r.UpdatedAt = int64(asInt(row[5]))
+		r.UpdatedAt = asInt64(row[5])
 		r.Origin = asText(row[6])
 	}
 	return r
