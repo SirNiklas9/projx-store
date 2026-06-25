@@ -20,7 +20,7 @@ var migrations = []string{
 		rkey  TEXT,
 		body  TEXT
 	)`,
-	// 2: last-write-wins clock (unix seconds; 0 = unknown/oldest).
+	// 2: last-write-wins clock (unix milliseconds; 0 = unknown/oldest).
 	`ALTER TABLE records ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`,
 	// 3: which brain/machine authored the record (for origin-aware merge; "" = unknown).
 	`ALTER TABLE records ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
