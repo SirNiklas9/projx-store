@@ -24,8 +24,13 @@ teach its shape — define the contract now, learn the implementation later. `Me
 
 ## Status
 
-P1, fresh build, zero external deps. Clean slate.
+Active — SQLite backend live (modernc.org/sqlite, pure-Go, no CGo), three-migration
+schema (records table + updated_at + origin for last-write-wins merge), full test
+coverage for Mem, SQLite, Workspace, merge engine, and export. Wasm (GOARCH=wasm)
+build uses the Pulp host's storage.sqlite capability via build-tag seam.
 
 ```sh
 go test ./...
+# wasm gate
+GOOS=wasip1 GOARCH=wasm go build ./...
 ```
