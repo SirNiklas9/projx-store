@@ -62,11 +62,13 @@ const (
 	KHistory                       // an append-only change record (commit output)
 	KGateRule                      // a gate/redaction rule
 	KDeclaredStructure             // declared module/system grouping for the graph
+	KRoute                         // a capability class -> agent launch command (model tier)
 )
 
 var kindNames = map[Kind]string{
 	KRecipe: "recipe", KConvention: "convention", KADR: "adr", KDoc: "doc",
 	KHistory: "history", KGateRule: "gate-rule", KDeclaredStructure: "declared-structure",
+	KRoute: "route",
 }
 
 func (k Kind) String() string {
