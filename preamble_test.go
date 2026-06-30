@@ -179,6 +179,97 @@ func TestAgentContextForTask(t *testing.T) {
 	}
 }
 
+// TestAgentContextFloor proves the lean session-start floor: protocol + LAW in
+// full, and NO reference knowledge dumped (it streams in per-task via the delta).
+func TestAgentContextFloor(t *testing.T) {
+	m := NewMem()
+	put := func(id string, k Kind, key, body string) {
+		if err := m.Put(Record{ID: id, Kind: k, Scope: ScopeProject, Key: key, Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("gate-rule/secrets", KGateRule, "secrets", "secret/**")      // LAW
+	put("convention/naming", KConvention, "naming", "use camelCase") // LAW
+	put("doc/mc-login", KDoc, "minecraft/login/backend", "JWT auth in internal/auth/login.go")
+	put("doc/canary", KDoc, "canary/up", "Up has balloons")
+
+	floor := AgentContextFloor(m)
+	if !strings.Contains(floor, "READ BEFORE ACTING") {
+		t.Error("floor missing the protocol lecture")
+	}
+	for _, law := range []string{"secret/**", "use camelCase"} {
+		if !strings.Contains(floor, law) {
+			t.Errorf("floor missing LAW %q", law)
+		}
+	}
+	for _, ref := range []string{"minecraft/login/backend", "doc/mc-login", "canary/up", "balloons"} {
+		if strings.Contains(floor, ref) {
+			t.Errorf("floor should NOT dump reference knowledge %q (loads per-task)", ref)
+		}
+	}
+	if len(floor) >= len(AgentPreamble(m)) {
+		t.Error("lean floor should be smaller than the full preamble")
+	}
+}
+
+// TestAgentContextDelta proves the per-message delta contract: the LAW always
+// re-sends in full, a NEW task-relevant reference record is injected once, an
+// UNCHANGED already-seen record is suppressed on the next turn, a CHANGED record
+// re-injects, and the returned seen map tracks what has been shown.
+func TestAgentContextDelta(t *testing.T) {
+	m := NewMem()
+	put := func(id string, k Kind, key, body string) {
+		if err := m.Put(Record{ID: id, Kind: k, Scope: ScopeProject, Key: key, Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("gate-rule/secrets", KGateRule, "secrets", "secret/**")      // LAW
+	put("convention/naming", KConvention, "naming", "use camelCase") // LAW
+	put("doc/mc-login", KDoc, "minecraft/login/backend", "JWT auth in internal/auth/login.go")
+	put("doc/billing", KDoc, "billing/checkout", "stripe flow")
+	put("doc/canary", KDoc, "canary/up", "Up has balloons")
+
+	// Turn 1: nothing seen yet. The relevant doc is new → injected; law present;
+	// the protocol lecture is NOT repeated (delta is leaner than the full preamble).
+	d1, seen1 := AgentContextDelta(m, "look at the minecraft login backend", nil)
+	for _, law := range []string{"secret/**", "use camelCase"} {
+		if !strings.Contains(d1, law) {
+			t.Errorf("delta turn1 missing LAW %q", law)
+		}
+	}
+	if !strings.Contains(d1, "minecraft/login/backend") {
+		t.Error("delta turn1 missing the new relevant doc")
+	}
+	for _, off := range []string{"billing/checkout", "canary/up", "balloons"} {
+		if strings.Contains(d1, off) {
+			t.Errorf("delta turn1 leaked out-of-slice %q", off)
+		}
+	}
+	if strings.Contains(d1, "READ BEFORE ACTING") {
+		t.Error("delta should NOT repeat the full protocol lecture each turn")
+	}
+	if seen1["doc/mc-login"] == 0 {
+		t.Error("seen map should record the injected doc/mc-login")
+	}
+
+	// Turn 2: same task, doc/mc-login unchanged → SUPPRESSED (already in context),
+	// but the LAW still re-sends.
+	d2, _ := AgentContextDelta(m, "more on the minecraft login backend", seen1)
+	if strings.Contains(d2, "minecraft/login/backend") {
+		t.Error("delta turn2 re-sent an unchanged, already-seen doc")
+	}
+	if !strings.Contains(d2, "secret/**") {
+		t.Error("delta turn2 dropped the standing LAW (must always re-send)")
+	}
+
+	// Turn 3: the doc CHANGES → it re-injects even though it was seen.
+	put("doc/mc-login", KDoc, "minecraft/login/backend", "JWT auth moved to internal/auth/v2.go")
+	d3, _ := AgentContextDelta(m, "minecraft login backend again", seen1)
+	if !strings.Contains(d3, "internal/auth/v2.go") {
+		t.Error("delta turn3 failed to re-inject a CHANGED record")
+	}
+}
+
 // TestPreambleOneLine covers the summary helper's truncation and edge cases.
 func TestPreambleOneLine(t *testing.T) {
 	cases := []struct {

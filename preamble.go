@@ -202,6 +202,149 @@ func AgentContextForTask(st Store, task string) string {
 	return b.String()
 }
 
+// AgentContextFloor renders the LEAN session-start floor: the full protocol lecture
+// plus the LAW (gate rules + conventions) in full — and nothing else. The reference
+// knowledge (ADRs, docs, declared structure, history) is deliberately NOT dumped here;
+// it loads per-message via AgentContextDelta as a task makes it relevant ("why load
+// the full context if you don't have to"). This is the SessionStart counterpart to the
+// per-message delta: small + binding at the top of a session, the rest streamed in on
+// demand. Pure and read-only; a nil/empty store still yields the protocol.
+func AgentContextFloor(st Store) string {
+	var b strings.Builder
+	b.WriteString("# ProjX project knowledge store — YOUR CONTRACT (read this first)\n\n")
+	b.WriteString(preambleProtocolText)
+	b.WriteString("\n\n---\n\n")
+	b.WriteString("# Standing law (always in force)\n")
+	b.WriteString("_The binding floor for this project. Project docs, decisions, and history are NOT dumped here — they load per-task as you work. Run `projx-engine store get <id>` or `store query` to pull any of them._\n")
+
+	if st == nil {
+		b.WriteString("\n_(store unavailable)_\n")
+		return b.String()
+	}
+	wroteAny := false
+	for _, sec := range preambleSections {
+		if !sec.full { // floor carries the LAW only; reference loads on demand
+			continue
+		}
+		recs := dropSettings(st.List(OfKind(sec.kind)))
+		if len(recs) == 0 {
+			continue
+		}
+		sort.Slice(recs, func(i, j int) bool {
+			if recs[i].Key != recs[j].Key {
+				return recs[i].Key < recs[j].Key
+			}
+			return recs[i].ID < recs[j].ID
+		})
+		wroteAny = true
+		fmt.Fprintf(&b, "\n## %s\n", sec.header)
+		for _, r := range recs {
+			if len(r.Body) <= preambleFullBodyCap {
+				renderPreambleRecord(&b, sec.kind, r)
+			} else {
+				renderPreambleIndexRecord(&b, sec.kind, r)
+			}
+		}
+	}
+	if !wroteAny {
+		b.WriteString("\n_(no law declared yet — no off-limits paths or conventions in the store.)_\n")
+	}
+	return b.String()
+}
+
+// AgentContextDelta renders the PER-MESSAGE contract for a session that has ALREADY
+// been injected the records named in `seen` (recordID -> the UpdatedAt at injection
+// time). Unlike AgentContextForTask it does NOT repeat the protocol lecture — the
+// agent received it at SessionStart and it is still in context. The LAW (gate rules +
+// conventions) is always re-sent in full: it is small, binding, and must not be
+// forgotten between turns. Reference records (ADR / doc / declared-structure / history)
+// are included ONLY when they (a) match the task slice AND (b) are new or changed
+// versus `seen` — so an unchanged record already in the agent's context is not paid
+// for again. Returns the rendered text plus the UPDATED seen map (every task-relevant
+// record now in the agent's context, by id -> UpdatedAt) for the caller to persist as
+// the session checkpoint. A nil `seen` means "fresh session" (everything relevant is
+// new). Deterministic and read-only.
+func AgentContextDelta(st Store, task string, seen map[string]int64) (string, map[string]int64) {
+	nowSeen := make(map[string]int64, len(seen))
+	for k, v := range seen {
+		nowSeen[k] = v
+	}
+	if st == nil {
+		return "# ProjX — session context update\n_(store unavailable)_\n", nowSeen
+	}
+
+	toks := significantTokens(task)
+	relevant := func(r Record) bool {
+		if len(toks) == 0 { // no slicing signal → treat all reference as relevant
+			return true
+		}
+		hay := strings.ToLower(r.Key + "\n" + r.Body)
+		for _, t := range toks {
+			if strings.Contains(hay, t) {
+				return true
+			}
+		}
+		return false
+	}
+
+	var body strings.Builder
+	newRefs := 0
+	for _, sec := range preambleSections {
+		recs := dropSettings(st.List(OfKind(sec.kind)))
+		var kept []Record
+		if sec.full { // LAW: always re-sent in full, never delta-suppressed
+			kept = recs
+			for _, r := range recs {
+				nowSeen[r.ID] = r.UpdatedAt
+			}
+		} else { // reference: only task-relevant AND new/changed vs seen
+			for _, r := range recs {
+				if !relevant(r) {
+					continue
+				}
+				if old, ok := seen[r.ID]; ok && old == r.UpdatedAt {
+					nowSeen[r.ID] = r.UpdatedAt // unchanged, already shown — keep, skip render
+					continue
+				}
+				kept = append(kept, r)
+				nowSeen[r.ID] = r.UpdatedAt
+				newRefs++
+			}
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		sort.Slice(kept, func(i, j int) bool {
+			if kept[i].Key != kept[j].Key {
+				return kept[i].Key < kept[j].Key
+			}
+			return kept[i].ID < kept[j].ID
+		})
+		fmt.Fprintf(&body, "\n## %s\n", sec.header)
+		if !sec.full {
+			body.WriteString("_(indexed — run `projx-engine store get <id>` to load full content)_\n")
+		}
+		for _, r := range kept {
+			if sec.full && len(r.Body) <= preambleFullBodyCap {
+				renderPreambleRecord(&body, sec.kind, r)
+			} else {
+				renderPreambleIndexRecord(&body, sec.kind, r)
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("# ProjX — session context update (standing law + new knowledge for this task)\n")
+	if newRefs == 0 {
+		b.WriteString("_The binding law below is unchanged and re-asserted; no NEW project knowledge applies to this task beyond what is already in your context. Run `projx-engine store get <id>` or `store query` to pull anything else._\n")
+	} else {
+		b.WriteString("_The law (off-limits + conventions) is re-asserted in full; below it is only project knowledge that is NEW or CHANGED for this task — everything else is already in your context. Run `projx-engine store get <id>` to pull anything not shown._\n")
+	}
+	b.WriteString(body.String())
+	b.WriteString(CaptureHint(task)) // "" unless the task signals "remember this"
+	return b.String(), nowSeen
+}
+
 // significantTokens lowercases the task and returns distinct alphanumeric words
 // ≥3 chars that aren't common stopwords — the deterministic v1 selector signal.
 func significantTokens(task string) []string {
