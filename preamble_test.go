@@ -270,6 +270,72 @@ func TestAgentContextDelta(t *testing.T) {
 	}
 }
 
+// TestAgentContextForTaskSel proves the v2 selector path: a SelectorFunc is handed the
+// candidate reference keys and its chosen subset is what loads (law always present),
+// independent of token overlap. A nil selector reverts to v1 token matching.
+func TestAgentContextForTaskSel(t *testing.T) {
+	m := NewMem()
+	put := func(id string, k Kind, key, body string) {
+		if err := m.Put(Record{ID: id, Kind: k, Scope: ScopeProject, Key: key, Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("gate-rule/secrets", KGateRule, "secrets", "secret/**")
+	put("convention/naming", KConvention, "naming", "use camelCase")
+	put("doc/login", KDoc, "auth/login/backend", "JWT session handling")
+	put("doc/billing", KDoc, "billing/checkout", "stripe flow")
+
+	// The selector receives the candidate keys and picks billing — even though the task
+	// words ("paragraph...") don't lexically overlap it. This is the semantic win the v1
+	// token matcher can't do.
+	var gotKeys []string
+	sel := func(task string, keys []string) []string {
+		gotKeys = keys
+		return []string{"billing/checkout"}
+	}
+	ctx := AgentContextForTaskSel(m, "a long rambling paragraph about money movement", sel)
+
+	if len(gotKeys) != 2 {
+		t.Errorf("selector should get both reference keys, got %v", gotKeys)
+	}
+	if !strings.Contains(ctx, "secret/**") || !strings.Contains(ctx, "use camelCase") {
+		t.Error("law must always load regardless of selector")
+	}
+	if !strings.Contains(ctx, "billing/checkout") {
+		t.Error("selector-chosen record missing")
+	}
+	if strings.Contains(ctx, "auth/login/backend") {
+		t.Error("non-selected record leaked")
+	}
+
+	// Nil selector → v1 token match (a "login" task pulls the login doc, not billing).
+	v1 := AgentContextForTaskSel(m, "fix the login backend", nil)
+	if !strings.Contains(v1, "auth/login/backend") || strings.Contains(v1, "billing/checkout") {
+		t.Error("nil selector should use v1 token matching")
+	}
+
+	// A selector that returns nothing (model failed) degrades to v1, not starvation:
+	// the "login" task still pulls the login doc via token fallback.
+	empty := AgentContextForTaskSel(m, "fix the login backend", func(string, []string) []string { return nil })
+	if !strings.Contains(empty, "auth/login/backend") {
+		t.Error("empty selection should fall back to v1, not starve the agent")
+	}
+}
+
+// TestReferenceKeys covers the candidate-key gathering for the selector.
+func TestReferenceKeys(t *testing.T) {
+	m := NewMem()
+	_ = m.Put(Record{ID: "g", Kind: KGateRule, Scope: ScopeProject, Key: "secrets", Body: "secret/**"})
+	_ = m.Put(Record{ID: "d1", Kind: KDoc, Scope: ScopeProject, Key: "auth/login", Body: "x"})
+	_ = m.Put(Record{ID: "d2", Kind: KADR, Scope: ScopeProject, Key: "db/choice", Body: "y"})
+	keys := referenceKeys(m)
+	// Law (gate) key excluded; reference keys present and sorted.
+	want := []string{"auth/login", "db/choice"}
+	if len(keys) != 2 || keys[0] != want[0] || keys[1] != want[1] {
+		t.Errorf("referenceKeys = %v, want %v (law excluded, sorted)", keys, want)
+	}
+}
+
 // TestPreambleOneLine covers the summary helper's truncation and edge cases.
 func TestPreambleOneLine(t *testing.T) {
 	cases := []struct {

@@ -133,18 +133,33 @@ func AgentContext(st Store, sel Filter) string {
 	return b.String()
 }
 
-// AgentContextForTask is the task-driven entry point used by the launch hooks:
-// it derives a DETERMINISTIC selector from the task (v1: significant tokens matched
-// against each record's Key+Body) and renders the law + only the reference records
-// relevant to the task. Falls back to the FULL context when the task yields no
-// usable tokens (never starve the agent of context). The law (gates+conventions)
-// always loads in full. (v2 — a cheap-model-proposed selector — layers on top.)
+// SelectorFunc proposes which reference records are relevant to a task. Given the task
+// and the candidate reference-record keys (the index), it returns the subset of keys to
+// include. A consumer (the engine, backed by a cheap model) injects a real one for v2
+// SEMANTIC selection; nil falls back to the v1 DETERMINISTIC token selector (the offline
+// floor). This is the "cheap-model-proposed query" the plan layers on top of v1.
+type SelectorFunc func(task string, candidateKeys []string) (relevantKeys []string)
+
+// AgentContextForTask is the task-driven entry point used by the launch hooks: it
+// renders the law + only the reference records relevant to the task, selected by the v1
+// DETERMINISTIC token match (significant tokens vs each record's Key+Body). Equivalent
+// to AgentContextForTaskSel with a nil selector.
 func AgentContextForTask(st Store, task string) string {
+	return AgentContextForTaskSel(st, task, nil)
+}
+
+// AgentContextForTaskSel renders the task-sliced contract using sel to choose the
+// relevant reference records (v2 semantic selection) — or, when sel is nil, the
+// deterministic v1 token match. The law (gates+conventions) always loads in full. Falls
+// back to the FULL context when there is no selection signal at all (nil sel AND no
+// usable tokens), so the agent is never starved of context.
+func AgentContextForTaskSel(st Store, task string, sel SelectorFunc) string {
 	toks := significantTokens(task)
-	if st == nil || len(toks) == 0 {
+	if st == nil || (sel == nil && len(toks) == 0) {
 		return AgentPreamble(st) + CaptureHint(task)
 	}
-	matchAny := func(r Record) bool {
+
+	tokenMatch := func(r Record) bool {
 		hay := strings.ToLower(r.Key + "\n" + r.Body)
 		for _, t := range toks {
 			if strings.Contains(hay, t) {
@@ -152,6 +167,23 @@ func AgentContextForTask(st Store, task string) string {
 			}
 		}
 		return false
+	}
+
+	var matchAny func(r Record) bool
+	if sel != nil {
+		// v2: hand the model the candidate reference keys and use the subset it returns.
+		selected := sel(task, referenceKeys(st))
+		if len(selected) == 0 && len(toks) > 0 {
+			matchAny = tokenMatch // model picked nothing (or failed) → safe v1 fallback
+		} else {
+			chosen := map[string]bool{}
+			for _, k := range selected {
+				chosen[strings.TrimSpace(k)] = true
+			}
+			matchAny = func(r Record) bool { return chosen[strings.TrimSpace(r.Key)] }
+		}
+	} else {
+		matchAny = tokenMatch // v1: deterministic token overlap
 	}
 
 	var b strings.Builder
@@ -263,8 +295,16 @@ func AgentContextFloor(st Store) string {
 // for again. Returns the rendered text plus the UPDATED seen map (every task-relevant
 // record now in the agent's context, by id -> UpdatedAt) for the caller to persist as
 // the session checkpoint. A nil `seen` means "fresh session" (everything relevant is
-// new). Deterministic and read-only.
+// new). Deterministic and read-only. Equivalent to AgentContextDeltaSel with nil sel.
 func AgentContextDelta(st Store, task string, seen map[string]int64) (string, map[string]int64) {
+	return AgentContextDeltaSel(st, task, seen, nil)
+}
+
+// AgentContextDeltaSel is AgentContextDelta with an injectable relevance selector: when
+// sel is non-nil it chooses the relevant reference records semantically (v2); nil uses
+// the deterministic v1 token match. An empty/failed selection falls back to v1 so a
+// turn is never starved.
+func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel SelectorFunc) (string, map[string]int64) {
 	nowSeen := make(map[string]int64, len(seen))
 	for k, v := range seen {
 		nowSeen[k] = v
@@ -274,7 +314,7 @@ func AgentContextDelta(st Store, task string, seen map[string]int64) (string, ma
 	}
 
 	toks := significantTokens(task)
-	relevant := func(r Record) bool {
+	tokenMatch := func(r Record) bool {
 		if len(toks) == 0 { // no slicing signal → treat all reference as relevant
 			return true
 		}
@@ -285,6 +325,17 @@ func AgentContextDelta(st Store, task string, seen map[string]int64) (string, ma
 			}
 		}
 		return false
+	}
+	relevant := tokenMatch
+	if sel != nil {
+		selected := sel(task, referenceKeys(st))
+		if len(selected) > 0 || len(toks) == 0 {
+			chosen := map[string]bool{}
+			for _, k := range selected {
+				chosen[strings.TrimSpace(k)] = true
+			}
+			relevant = func(r Record) bool { return chosen[strings.TrimSpace(r.Key)] }
+		} // else: empty selection with tokens present → keep tokenMatch (v1 fallback)
 	}
 
 	var body strings.Builder
@@ -343,6 +394,31 @@ func AgentContextDelta(st Store, task string, seen map[string]int64) (string, ma
 	b.WriteString(body.String())
 	b.WriteString(CaptureHint(task)) // "" unless the task signals "remember this"
 	return b.String(), nowSeen
+}
+
+// referenceKeys returns the distinct, sorted keys of all NON-law reference records
+// (ADR / doc / declared-structure / history) — the candidate index a v2 SelectorFunc
+// chooses from. Law sections (gates/conventions) always load in full and are excluded.
+func referenceKeys(st Store) []string {
+	if st == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, sec := range preambleSections {
+		if sec.full {
+			continue
+		}
+		for _, r := range dropSettings(st.List(OfKind(sec.kind))) {
+			k := strings.TrimSpace(r.Key)
+			if k != "" && !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // significantTokens lowercases the task and returns distinct alphanumeric words
