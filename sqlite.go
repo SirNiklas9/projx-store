@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // SQLite is a SQLite-backed Store. It behaves identically to Mem — insert-or-replace
 // Put, (Record, bool) Get, no-op Delete, ID-sorted List — but persists through a
@@ -83,6 +86,17 @@ func (s *SQLite) List(f Filter) []Record {
 		clauses = append(clauses, "kind = ?")
 		args = append(args, int64(*f.Kind))
 	}
+	// KeyPrefix/Text mirror Filter.match: LIKE is case-insensitive for ASCII
+	// (matches Mem's ToLower); metachars in the fragment are escaped (ESCAPE '\').
+	if f.KeyPrefix != "" {
+		clauses = append(clauses, `rkey LIKE ? ESCAPE '\'`)
+		args = append(args, likeEscape(f.KeyPrefix)+"%")
+	}
+	if f.Text != "" {
+		clauses = append(clauses, `(rkey LIKE ? ESCAPE '\' OR body LIKE ? ESCAPE '\')`)
+		esc := "%" + likeEscape(f.Text) + "%"
+		args = append(args, esc, esc)
+	}
 	for i, c := range clauses {
 		if i == 0 {
 			query += " WHERE "
@@ -102,6 +116,15 @@ func (s *SQLite) List(f Filter) []Record {
 		out = append(out, rowToRecord(row))
 	}
 	return out
+}
+
+// likeEscape escapes LIKE metacharacters (\ % _) so a Key/Text fragment matches
+// literally; the caller adds the real '%' wildcards. Pairs with ESCAPE '\'.
+func likeEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "%", `\%`)
+	s = strings.ReplaceAll(s, "_", `\_`)
+	return s
 }
 
 // compile-time assertion that SQLite satisfies Store.

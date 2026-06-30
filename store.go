@@ -9,6 +9,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -121,11 +122,19 @@ func stamp() int64 {
 	return t
 }
 
-// Filter selects records. The zero value matches everything; a non-nil field
-// narrows. Pointers distinguish "unset" from "the zero Scope/Kind".
+// Filter selects records. The zero value matches everything; a non-nil/non-empty
+// field narrows. Pointers distinguish "unset" from "the zero Scope/Kind".
+//
+// KeyPrefix and Text power task-sliced retrieval (the "query, don't dump" pillar):
+// KeyPrefix matches the Key as a path prefix ("minecraft/login" → minecraft/login,
+// minecraft/login/backend, …); Text is a case-insensitive substring of Key OR Body.
+// Both are case-insensitive so a query needn't know exact casing. SQLite mirrors
+// these as WHERE clauses (see SQLite.List) so results match Mem.List exactly.
 type Filter struct {
-	Scope *Scope
-	Kind  *Kind
+	Scope     *Scope
+	Kind      *Kind
+	KeyPrefix string
+	Text      string
 }
 
 // InScope is a convenience filter for one scope.
@@ -140,6 +149,15 @@ func (f Filter) match(r Record) bool {
 	}
 	if f.Kind != nil && r.Kind != *f.Kind {
 		return false
+	}
+	if f.KeyPrefix != "" && !strings.HasPrefix(strings.ToLower(r.Key), strings.ToLower(f.KeyPrefix)) {
+		return false
+	}
+	if f.Text != "" {
+		t := strings.ToLower(f.Text)
+		if !strings.Contains(strings.ToLower(r.Key), t) && !strings.Contains(strings.ToLower(r.Body), t) {
+			return false
+		}
 	}
 	return true
 }
