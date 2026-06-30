@@ -16,31 +16,221 @@ var FloorRoutes = []SeedRec{
 	{"deep-reasoning", "claude --model claude-opus-4-8"},           // hard: architecture, multi-file, debugging
 }
 
-// Classify maps a task to a capability class by keyword. Deterministic; no LLM.
-// Priority: deep-reasoning > cheap-fast > default.
-func Classify(task string) string {
+// deepKeywords / cheapKeywords are the BUILT-IN floor signals for the deterministic
+// classifier. They are the shipped defaults; a project EXTENDS them with its own
+// domain vocabulary via store records (see ClassifyStore) — "one definition of
+// anything", tunable by `store commit`, not a recompile.
+var (
+	deepKeywords = []string{"design", "architect", "architecture", "refactor", "why", "plan",
+		"debug", "diagnose", "analyse", "analyze", "redesign", "strategy", "tradeoff", "trade-off"}
+	cheapKeywords = []string{"rename", "typo", "format", "comment", "small", "trivial",
+		"one-liner", "oneliner", "quick fix", "quickfix", "spelling"}
+)
+
+// ClassifyConfident maps a task to a capability class by keyword and reports whether
+// a keyword actually MATCHED (true) or the task fell through to the default class with
+// no signal (false). The matched flag is what the decider uses to tell a confident
+// keyword route from the ambiguous middle that warrants cheap model triage.
+// Deterministic; no LLM. Priority: deep-reasoning > cheap-fast > default.
+func ClassifyConfident(task string) (class string, matched bool) {
+	return classifyWith(task, deepKeywords, cheapKeywords)
+}
+
+// Classify is the back-compat single-return classifier (the class only).
+func Classify(task string) string { c, _ := ClassifyConfident(task); return c }
+
+// ClassifyStore is ClassifyConfident augmented with a project's OWN keyword signals,
+// declared as KRoute records keyed `setting/route-keywords/<class>` (Body = extra
+// words, whitespace/comma separated). The built-in floor lists always apply; the
+// store signals extend them. This is the editable classifier: tune routing with a
+// store commit, never a recompile. A nil store == ClassifyConfident.
+func ClassifyStore(s Store, task string) (class string, matched bool) {
+	if s == nil {
+		return ClassifyConfident(task)
+	}
+	deep := append(append([]string{}, deepKeywords...), storeKeywords(s, "deep-reasoning")...)
+	cheap := append(append([]string{}, cheapKeywords...), storeKeywords(s, "cheap-fast")...)
+	return classifyWith(task, deep, cheap)
+}
+
+// classifyWith is the shared keyword match: deep beats cheap beats default.
+func classifyWith(task string, deep, cheap []string) (string, bool) {
 	t := strings.ToLower(task)
-	if containsAny(t, "design", "architect", "architecture", "refactor", "why", "plan",
-		"debug", "diagnose", "analyse", "analyze", "redesign", "strategy", "tradeoff", "trade-off") {
-		return "deep-reasoning"
+	if containsAny(t, deep...) {
+		return "deep-reasoning", true
 	}
-	if containsAny(t, "rename", "typo", "format", "comment", "small", "trivial",
-		"one-liner", "oneliner", "quick fix", "quickfix", "spelling") {
-		return "cheap-fast"
+	if containsAny(t, cheap...) {
+		return "cheap-fast", true
 	}
-	return "default"
+	return "default", false
 }
 
 // Route classifies task and resolves the launch command from the store's KRoute
 // records. Returns the class and the command (cmd is "" if no record for the class).
 func Route(s Store, task string) (class, cmd string) {
 	class = Classify(task)
+	return class, routeCmd(s, class)
+}
+
+// routeCmd resolves a capability class to its launch command from the KRoute tier-map
+// records ("" if none). Setting records (key `setting/...`) never match a class name.
+func routeCmd(s Store, class string) string {
+	if s == nil {
+		return ""
+	}
 	for _, r := range s.List(OfKind(KRoute)) {
 		if strings.EqualFold(r.Key, class) {
-			return class, r.Body
+			return r.Body
 		}
 	}
-	return class, ""
+	return ""
+}
+
+// classRank orders the tiers cheap → standard → deep, so floor (a minimum) and
+// escalate-on-uncertainty (go up one) are simple integer moves. Unknown classes
+// rank as "default" (1) so a typo never silently routes to the cheapest tier.
+var classRank = map[string]int{"cheap-fast": 0, "default": 1, "deep-reasoning": 2}
+
+var tierByRank = []string{"cheap-fast", "default", "deep-reasoning"}
+
+func rankOf(class string) int {
+	if r, ok := classRank[class]; ok {
+		return r
+	}
+	return 1
+}
+
+// escalate returns the next tier UP (capped at the top) — the escalate-on-uncertainty
+// move: when triage is unsure, spend more, never less.
+func escalate(class string) string {
+	r := rankOf(class) + 1
+	if r >= len(tierByRank) {
+		r = len(tierByRank) - 1
+	}
+	return tierByRank[r]
+}
+
+// Routing-setting record keys. They live in the store as KRoute records under a
+// `setting/` key prefix so they are routing knowledge that travels + is journaled,
+// yet are excluded from context injection (dropSettings).
+const (
+	SettingRoutePin      = "setting/route-pin"      // Body = class: hard-lock every task to this tier
+	SettingRouteFloor    = "setting/route-floor"    // Body = class: minimum tier; triage may go above
+	settingRouteKeywords = "setting/route-keywords" // /<class> Body = extra trigger words
+)
+
+// settingBody returns the trimmed Body of a setting record by its key ("" if absent).
+func settingBody(s Store, key string) string {
+	if s == nil {
+		return ""
+	}
+	for _, r := range s.List(OfKind(KRoute)) {
+		if r.Key == key {
+			return strings.TrimSpace(r.Body)
+		}
+	}
+	return ""
+}
+
+// validTier reports whether class is one of the known tiers.
+func validTier(class string) bool { _, ok := classRank[class]; return ok }
+
+// storeKeywords reads the project's extra trigger words for a class from its
+// `setting/route-keywords/<class>` record, split on whitespace/commas, lowercased.
+func storeKeywords(s Store, class string) []string {
+	body := settingBody(s, settingRouteKeywords+"/"+class)
+	if body == "" {
+		return nil
+	}
+	var out []string
+	for _, w := range strings.FieldsFunc(strings.ToLower(body), func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		if w != "" {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// TriageFunc is the injectable cheap-model triage seam: given an ambiguous task it
+// returns a proposed class and whether it is confident. The store library stays
+// OS-/network-free — a consumer (the engine) supplies a real haiku-backed func; nil
+// means "deterministic only" (ambiguous tasks fall to the default tier).
+type TriageFunc func(task string) (class string, confident bool)
+
+// RouteDecision is the resolved routing choice plus how it was reached.
+type RouteDecision struct {
+	Class  string // cheap-fast | default | deep-reasoning
+	Cmd    string // launch command from the KRoute tier map ("" if none)
+	Source string // override | pin | keyword | triage | triage-escalated | default (+floor)
+	Reason string // short human explanation
+}
+
+// RouteDecide is the DECIDER: it resolves a task to a tier by the locked precedence
+// ladder — cheapest possible, escalating only when earned ("lowest model, highest
+// yield"):
+//
+//	1. per-message @-override   (@cheap/@haiku, @sonnet/@default, @opus/@deep) — always wins,
+//	   bypasses pin AND floor (the user asked for it explicitly, this once).
+//	2. standing PIN setting     — hard-lock to one tier; triage is skipped entirely.
+//	3. deterministic classifier — a matched keyword routes for free (store-augmentable).
+//	4. cheap haiku triage       — only for the ambiguous middle; escalate-on-uncertainty.
+//	5. default tier             — no signal.
+//
+// Steps 3–5 are then raised to the standing FLOOR (a minimum tier) if one is set.
+// Pure given a pure triage func; deterministic when triage is nil.
+func RouteDecide(s Store, task string, triage TriageFunc) RouteDecision {
+	floor := settingBody(s, SettingRouteFloor)
+	resolve := func(class, source, reason string, applyFloor bool) RouteDecision {
+		if applyFloor && validTier(floor) && rankOf(class) < rankOf(floor) {
+			class = floor
+			source += "+floor"
+			reason += " (raised to floor " + floor + ")"
+		}
+		return RouteDecision{Class: class, Cmd: routeCmd(s, class), Source: source, Reason: reason}
+	}
+
+	// 1. Explicit per-message override — wins over everything, no floor.
+	if c, ok := taskTierOverride(task); ok {
+		return resolve(c, "override", "explicit @-override in the message", false)
+	}
+	// 2. Standing pin — hard lock, triage disabled, no floor (pin IS the exact tier).
+	if pin := settingBody(s, SettingRoutePin); validTier(pin) {
+		return resolve(pin, "pin", "pinned tier (standing setting) — triage disabled", false)
+	}
+	// 3. Deterministic keyword classifier (store-augmented).
+	if class, matched := ClassifyStore(s, task); matched {
+		return resolve(class, "keyword", "keyword classifier matched", true)
+	}
+	// 4. Ambiguous middle → cheap triage, escalate when unsure.
+	if triage != nil {
+		if class, confident := triage(task); validTier(class) {
+			if !confident {
+				up := escalate(class)
+				return resolve(up, "triage-escalated", "triage unsure on "+class+" → escalated", true)
+			}
+			return resolve(class, "triage", "haiku triage decided the ambiguous task", true)
+		}
+	}
+	// 5. No signal.
+	return resolve("default", "default", "no routing signal — default tier", true)
+}
+
+// taskTierOverride parses an explicit per-message tier directive. Tier aliases AND the
+// concrete model names both work so the user can think in either. @audit is NOT here:
+// it triggers a workflow and lets the decider pick the fitting tier (orthogonal).
+func taskTierOverride(task string) (class string, ok bool) {
+	t := strings.ToLower(task)
+	switch {
+	case strings.Contains(t, "@cheap"), strings.Contains(t, "@haiku"):
+		return "cheap-fast", true
+	case strings.Contains(t, "@sonnet"), strings.Contains(t, "@default"), strings.Contains(t, "@standard"):
+		return "default", true
+	case strings.Contains(t, "@opus"), strings.Contains(t, "@deep"):
+		return "deep-reasoning", true
+	}
+	return "", false
 }
 
 // floorRoute builds a project-scoped KRoute seed record.
