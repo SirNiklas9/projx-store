@@ -142,7 +142,7 @@ func AgentContext(st Store, sel Filter) string {
 func AgentContextForTask(st Store, task string) string {
 	toks := significantTokens(task)
 	if st == nil || len(toks) == 0 {
-		return AgentPreamble(st)
+		return AgentPreamble(st) + CaptureHint(task)
 	}
 	matchAny := func(r Record) bool {
 		hay := strings.ToLower(r.Key + "\n" + r.Body)
@@ -198,6 +198,7 @@ func AgentContextForTask(st Store, task string) string {
 	if !wroteAny {
 		b.WriteString("\n_(no matching knowledge — the store is empty or nothing matched the task)_\n")
 	}
+	b.WriteString(CaptureHint(task)) // "" unless the task signals "remember this"
 	return b.String()
 }
 
