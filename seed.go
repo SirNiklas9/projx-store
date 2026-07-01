@@ -46,6 +46,14 @@ func SeedFloor(s Store) int {
 			n++
 		}
 	}
+	// The default provider integration — Claude Code, as replaceable DATA. Override by
+	// declaring your own integration (seed.toml [[integration]]) and marking it active.
+	if s.Put(IntegrationRecord(DefaultIntegration)) == nil {
+		n++
+	}
+	if s.Put(IntegrationActiveRecord(DefaultIntegration.Name)) == nil {
+		n++
+	}
 	return n
 }
 
