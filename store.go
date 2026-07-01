@@ -42,13 +42,20 @@ func (s Scope) String() string {
 	return "scope?"
 }
 
-// Owner reports which of the two files a scope belongs to: "yours" (global +
-// workspace) or "project". Callers use this to route a write to the right file.
+// Owner reports which physical LEVEL a scope belongs to: "global" (machine/user),
+// "workspace" (an optional multi-repo folder), or "project" (one repo). The composer
+// routes a write to the store owning that level, falling back UP a level when the
+// owning store is absent — so project-only and project+global setups work with no
+// workspace store.
 func (s Scope) Owner() string {
-	if s == ScopeProject {
+	switch s {
+	case ScopeProject:
 		return "project"
+	case ScopeWorkspace:
+		return "workspace"
+	default:
+		return "global"
 	}
-	return "yours"
 }
 
 // Kind is the typed record vocabulary. The store holds records; the engines give

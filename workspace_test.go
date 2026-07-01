@@ -33,6 +33,54 @@ func TestWorkspaceRouting(t *testing.T) {
 	}
 }
 
+func TestCompositeThreeLevels(t *testing.T) {
+	global, space, project := NewMem(), NewMem(), NewMem()
+	w := NewComposite(global, space, project)
+
+	_ = w.Put(Record{ID: "g1", Kind: KRecipe, Scope: ScopeGlobal})
+	_ = w.Put(Record{ID: "w1", Kind: KConvention, Scope: ScopeWorkspace})
+	_ = w.Put(Record{ID: "p1", Kind: KADR, Scope: ScopeProject})
+
+	// Each scope lands in its OWN level's store — no collapsing global+workspace.
+	if _, ok := global.Get("g1"); !ok {
+		t.Error("global record not in global store")
+	}
+	if _, ok := space.Get("w1"); !ok {
+		t.Error("workspace record not in workspace store")
+	}
+	if _, ok := project.Get("p1"); !ok {
+		t.Error("project record not in project store")
+	}
+	if _, ok := global.Get("w1"); ok {
+		t.Error("workspace record leaked into global store")
+	}
+	// Unscoped List composes all three levels.
+	if got := len(w.List(Filter{})); got != 3 {
+		t.Errorf("composed List = %d records, want 3", got)
+	}
+	// A scope-pinned List hits only the owning level.
+	sc := ScopeWorkspace
+	if got := w.List(Filter{Scope: &sc}); len(got) != 1 || got[0].ID != "w1" {
+		t.Errorf("workspace-pinned List = %v, want [w1]", got)
+	}
+}
+
+// TestCompositeProjectOnly: with no workspace store, workspace-scoped writes fall back
+// UP to global — so a bare project (no workspace) just works.
+func TestCompositeProjectOnly(t *testing.T) {
+	global, project := NewMem(), NewMem()
+	w := NewComposite(global, nil, project)
+
+	_ = w.Put(Record{ID: "w1", Kind: KConvention, Scope: ScopeWorkspace})
+	if _, ok := global.Get("w1"); !ok {
+		t.Error("with no workspace store, workspace record should fall back to global")
+	}
+	_ = w.Put(Record{ID: "p1", Kind: KADR, Scope: ScopeProject})
+	if got := len(w.List(Filter{})); got != 2 {
+		t.Errorf("project-only composed List = %d, want 2", got)
+	}
+}
+
 func TestWorkspaceGetSpansBothStores(t *testing.T) {
 	w := NewWorkspace(NewMem(), NewMem())
 	_ = w.Put(Record{ID: "g1", Kind: KRecipe, Scope: ScopeGlobal})

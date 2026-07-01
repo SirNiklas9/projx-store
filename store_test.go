@@ -67,8 +67,8 @@ func TestListFilters(t *testing.T) {
 
 func TestScopeOwner(t *testing.T) {
 	cases := map[Scope]string{
-		ScopeGlobal:    "yours",
-		ScopeWorkspace: "yours",
+		ScopeGlobal:    "global",
+		ScopeWorkspace: "workspace",
 		ScopeProject:   "project",
 	}
 	for sc, want := range cases {

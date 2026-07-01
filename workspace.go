@@ -2,66 +2,98 @@ package store
 
 import "sort"
 
-// Workspace ties the two physical stores together as one logical Store, realizing
-// the "two files, three scopes" design: global + workspace records live in YOUR
-// store (the portable file that travels with you), project records live in the
-// PROJECT store (one per repo). It routes every operation to the owning store by
-// Record.Scope's Owner(), so callers see a single Store regardless of which file
-// a record physically lives in.
+// Workspace ties up to THREE physical stores into one logical Store, realizing the
+// multi-LEVEL model: machine/user GLOBAL, an optional WORKSPACE (a multi-repo folder
+// with its own rules), and the per-repo PROJECT store. Any level except Global may be
+// nil — point it at a bare repo (project + global, no workspace), a workspace with no
+// project open, or just global. Reads COMPOSE whatever is present; writes route by
+// Record.Scope.Owner(), falling back UP a level when the owning store is absent, so a
+// missing level never drops a write and project-only just works.
 type Workspace struct {
-	// Yours holds global- and workspace-scoped records (the portable file).
-	Yours Store
-	// Project holds project-scoped records (stays with the repo).
-	Project Store
+	Global  Store // machine/user level (also absorbs workspace-scoped writes when Space is nil)
+	Space   Store // OPTIONAL workspace level (nil = not in a workspace)
+	Project Store // per-repo level (nil = not pointed at a repo)
 }
 
-// NewWorkspace returns a Workspace over the two physical stores: yours holds
-// global + workspace records, project holds project records.
+// NewWorkspace is the 2-level (back-compat) constructor: yours holds global + workspace
+// records, project holds project records. Equivalent to NewComposite(yours, nil, project).
 func NewWorkspace(yours, project Store) *Workspace {
-	return &Workspace{Yours: yours, Project: project}
+	return &Workspace{Global: yours, Project: project}
 }
 
-// Put routes the record to the owning store by Scope.Owner(): "yours" (global +
-// workspace) goes to Yours, "project" goes to Project.
-func (w *Workspace) Put(r Record) error {
-	if r.Scope.Owner() == "project" {
-		return w.Project.Put(r)
+// NewComposite is the 3-level constructor. space may be nil (project-only / no workspace);
+// project may be nil (a workspace with nothing open). global is always required.
+func NewComposite(global, space, project Store) *Workspace {
+	return &Workspace{Global: global, Space: space, Project: project}
+}
+
+// owning returns the physical store for a scope's level, falling back UP (project→global,
+// workspace→global) when that level is absent — so a missing level never drops a write.
+func (w *Workspace) owning(s Scope) Store {
+	switch s.Owner() {
+	case "project":
+		if w.Project != nil {
+			return w.Project
+		}
+	case "workspace":
+		if w.Space != nil {
+			return w.Space
+		}
 	}
-	return w.Yours.Put(r)
+	return w.Global
 }
 
-// Get returns the record with the given ID. Project is checked first, then Yours;
-// the first hit wins.
+// present lists the non-nil stores in Project→Space→Global order (Get precedence: the
+// most specific level wins).
+func (w *Workspace) present() []Store {
+	var ss []Store
+	if w.Project != nil {
+		ss = append(ss, w.Project)
+	}
+	if w.Space != nil {
+		ss = append(ss, w.Space)
+	}
+	if w.Global != nil {
+		ss = append(ss, w.Global)
+	}
+	return ss
+}
+
+// Put routes the record to the store owning its scope's level (falling back up).
+func (w *Workspace) Put(r Record) error { return w.owning(r.Scope).Put(r) }
+
+// Get returns the record with the given ID, checking Project → Space → Global; the most
+// specific level's hit wins.
 func (w *Workspace) Get(id string) (Record, bool) {
-	if r, ok := w.Project.Get(id); ok {
-		return r, true
+	for _, s := range w.present() {
+		if r, ok := s.Get(id); ok {
+			return r, true
+		}
 	}
-	return w.Yours.Get(id)
+	return Record{}, false
 }
 
-// Delete removes the record with the given ID from both stores. Deleting a
-// missing ID is a no-op (not an error), matching the backing stores.
+// Delete removes the ID from every present store (a missing ID is a no-op).
 func (w *Workspace) Delete(id string) error {
-	if err := w.Project.Delete(id); err != nil {
-		return err
+	for _, s := range w.present() {
+		if err := s.Delete(id); err != nil {
+			return err
+		}
 	}
-	return w.Yours.Delete(id)
+	return nil
 }
 
-// List returns records matching the filter. When the filter pins a Scope, only
-// the store owning that scope is queried; otherwise results from BOTH stores are
-// merged and sorted by ID ascending so output is deterministic. The kind filter
-// (if any) is applied to both stores via the filter itself.
+// List composes records across the present levels. A scope-pinned filter queries only
+// the store owning that level; otherwise all present levels are merged and sorted by ID
+// so output is deterministic.
 func (w *Workspace) List(f Filter) []Record {
 	if f.Scope != nil {
-		if f.Scope.Owner() == "project" {
-			return w.Project.List(f)
-		}
-		return w.Yours.List(f)
+		return w.owning(*f.Scope).List(f)
 	}
 	var out []Record
-	out = append(out, w.Yours.List(f)...)
-	out = append(out, w.Project.List(f)...)
+	for _, s := range w.present() {
+		out = append(out, s.List(f)...)
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
