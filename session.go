@@ -9,6 +9,8 @@ package store
 // pulp.FS), so this file abstracts persistence behind CheckpointStore and keeps the
 // lifecycle decision (floor / delta / refill / suggest) here, defined ONCE.
 
+import "strings"
+
 // Checkpoint is the per-session delta state. JSON tags are stable on disk so a file
 // written by one face round-trips through another.
 type Checkpoint struct {
@@ -21,6 +23,10 @@ type Checkpoint struct {
 	// at that moment, so Stop can tell whether anything was committed afterward.
 	Flagged   bool  `json:"flagged_remember"`
 	FlaggedAt int64 `json:"flagged_at"`
+	// Focus is the repo/group the session is currently working in — set automatically as
+	// the agent edits that repo's files (or explicitly via @focus). It boosts that repo's
+	// records in the slice, and "shifts" when work moves to another repo.
+	Focus string `json:"focus,omitempty"`
 }
 
 // CheckpointStore persists one Checkpoint per session id. Load returns the zero
@@ -42,7 +48,8 @@ type CheckpointStore interface {
 // session's checkpoint via cps.
 func SessionContext(st Store, cps CheckpointStore, session, task string, reset bool, sel SelectorFunc) string {
 	if reset {
-		cps.Save(session, Checkpoint{Seen: map[string]int64{}, NeedFloor: true})
+		prev := cps.Load(session) // preserve focus across a compaction
+		cps.Save(session, Checkpoint{Seen: map[string]int64{}, NeedFloor: true, Focus: prev.Focus})
 		return ""
 	}
 	if task == "" {
@@ -59,21 +66,39 @@ func SessionContext(st Store, cps CheckpointStore, session, task string, reset b
 		cp.Flagged = true
 		cp.FlaggedAt = MaxUpdatedAt(st)
 	}
+	// An explicit @focus <repo> / @unfocus in the message overrides the (auto-tracked) focus.
+	cp.Focus = focusFromTask(task, cp.Focus)
 
 	if cp.NeedFloor {
 		// Post-compaction refill: full floor + slice, then re-seed seen from the delta.
-		out := AgentContextForTaskSel(st, task, sel)
-		_, seen := AgentContextDeltaSel(st, task, nil, sel)
+		out := AgentContextForTaskSel(st, task, sel, cp.Focus)
+		_, seen := AgentContextDeltaSel(st, task, nil, sel, cp.Focus)
 		cp.NeedFloor = false
 		cp.Seen = seen
 		cps.Save(session, cp)
 		return out
 	}
 
-	text, seen := AgentContextDeltaSel(st, task, cp.Seen, sel)
+	text, seen := AgentContextDeltaSel(st, task, cp.Seen, sel, cp.Focus)
 	cp.Seen = seen
 	cps.Save(session, cp)
 	return text
+}
+
+// focusFromTask applies an explicit focus directive in the message: `@focus <repo>` sets
+// it, `@unfocus` clears it; otherwise the current focus (auto-tracked from edits) stands.
+func focusFromTask(task, current string) string {
+	t := strings.ToLower(task)
+	if strings.Contains(t, "@unfocus") {
+		return ""
+	}
+	if i := strings.Index(t, "@focus"); i >= 0 {
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(t[i+len("@focus"):]), ":"))
+		for _, f := range strings.FieldsFunc(rest, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' }) {
+			return f // first word after @focus
+		}
+	}
+	return current
 }
 
 // SessionSuggest is the Stop suggestion: SUGGEST-ONLY, and only when an @remember was

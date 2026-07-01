@@ -74,11 +74,35 @@ func TaskSliceOverflows(st Store, task string) bool {
 	return false
 }
 
+// perGroupCap bounds how many slots a single repo/group may take in the FIRST pass, so a
+// big repo can't crowd out smaller ones that are the actual target. Leftover slots are
+// then filled ignoring the cap, so context is never wasted.
+const perGroupCap = 4
+
+// recordGroup returns the repo/group a record belongs to for balancing — the <repo>
+// segment of a code-map key (`code/<repo>/...`). Non-code records have no group.
+func recordGroup(r Record) string {
+	if strings.HasPrefix(r.Key, "code/") {
+		rest := r.Key[len("code/"):]
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			return rest[:i]
+		}
+		return rest
+	}
+	return ""
+}
+
 // rankAndCap scores matched records by how many task tokens they hit (via matchText),
-// keeps the top maxSliceRecords (recency then key as tie-breakers), and reports how many
-// were dropped. Kept records are returned in stable key order for display. This bounds
-// every reference slice regardless of how many records a token matched.
-func rankAndCap(recs []Record, toks []string) (kept []Record, overflow int) {
+// then selects up to maxSliceRecords with per-repo BALANCING: pass 1 gives each repo at
+// most perGroupCap of the top slots (so no repo crowds out the rest), pass 2 fills any
+// remaining slots with the best leftovers. Reports how many matched records were dropped.
+// Bounds every slice regardless of how many records a token matched, AND spreads it
+// across the repos that matched.
+// focusBoost outranks any token-hit count so a focused repo's matched records lead.
+const focusBoost = 1000
+
+func rankAndCap(recs []Record, toks []string, focus string) (kept []Record, overflow int) {
+	focus = strings.ToLower(strings.TrimSpace(focus))
 	type scored struct {
 		r     Record
 		score int
@@ -92,6 +116,9 @@ func rankAndCap(recs []Record, toks []string) (kept []Record, overflow int) {
 				n++
 			}
 		}
+		if focus != "" && strings.ToLower(recordGroup(r)) == focus {
+			n += focusBoost // records in the focused repo lead the slice
+		}
 		ss = append(ss, scored{r, n})
 	}
 	sort.SliceStable(ss, func(i, j int) bool {
@@ -103,13 +130,44 @@ func rankAndCap(recs []Record, toks []string) (kept []Record, overflow int) {
 		}
 		return ss[i].r.Key < ss[j].r.Key
 	})
-	if len(ss) > maxSliceRecords {
-		overflow = len(ss) - maxSliceRecords
-		ss = ss[:maxSliceRecords]
-	}
+
+	// Per-repo cap only when more than one repo matched (else it's a single focused set).
+	groups := map[string]bool{}
 	for _, s := range ss {
-		kept = append(kept, s.r)
+		if g := recordGroup(s.r); g != "" {
+			groups[g] = true
+		}
 	}
+	perGroup := len(ss)
+	if len(groups) > 1 {
+		perGroup = perGroupCap
+	}
+
+	picked := make([]bool, len(ss))
+	gc := map[string]int{}
+	for i, s := range ss { // pass 1: balanced (the FOCUS repo is exempt from the cap)
+		if len(kept) >= maxSliceRecords {
+			break
+		}
+		g := recordGroup(s.r)
+		if g != "" && strings.ToLower(g) != focus && gc[g] >= perGroup {
+			continue
+		}
+		kept = append(kept, s.r)
+		gc[g]++
+		picked[i] = true
+	}
+	for i, s := range ss { // pass 2: fill leftover slots
+		if len(kept) >= maxSliceRecords {
+			break
+		}
+		if !picked[i] {
+			kept = append(kept, s.r)
+			picked[i] = true
+		}
+	}
+	overflow = len(ss) - len(kept)
+
 	sort.Slice(kept, func(i, j int) bool {
 		if kept[i].Key != kept[j].Key {
 			return kept[i].Key < kept[j].Key
@@ -245,7 +303,7 @@ type SelectorFunc func(task string, candidateKeys []string) (relevantKeys []stri
 // DETERMINISTIC token match (significant tokens vs each record's Key+Body). Equivalent
 // to AgentContextForTaskSel with a nil selector.
 func AgentContextForTask(st Store, task string) string {
-	return AgentContextForTaskSel(st, task, nil)
+	return AgentContextForTaskSel(st, task, nil, "")
 }
 
 // AgentContextForTaskSel renders the task-sliced contract using sel to choose the
@@ -253,7 +311,7 @@ func AgentContextForTask(st Store, task string) string {
 // deterministic v1 token match. The law (gates+conventions) always loads in full. Falls
 // back to the FULL context when there is no selection signal at all (nil sel AND no
 // usable tokens), so the agent is never starved of context.
-func AgentContextForTaskSel(st Store, task string, sel SelectorFunc) string {
+func AgentContextForTaskSel(st Store, task string, sel SelectorFunc, focus string) string {
 	toks := significantTokens(task)
 	if st == nil || (sel == nil && len(toks) == 0) {
 		return AgentPreamble(st) + CaptureHint(task)
@@ -304,7 +362,7 @@ func AgentContextForTaskSel(st Store, task string, sel SelectorFunc) string {
 					matched = append(matched, r)
 				}
 			}
-			recs, overflow = rankAndCap(matched, toks)
+			recs, overflow = rankAndCap(matched, toks, focus)
 		} else {
 			sort.Slice(recs, func(i, j int) bool {
 				if recs[i].Key != recs[j].Key {
@@ -402,14 +460,15 @@ func AgentContextFloor(st Store) string {
 // the session checkpoint. A nil `seen` means "fresh session" (everything relevant is
 // new). Deterministic and read-only. Equivalent to AgentContextDeltaSel with nil sel.
 func AgentContextDelta(st Store, task string, seen map[string]int64) (string, map[string]int64) {
-	return AgentContextDeltaSel(st, task, seen, nil)
+	return AgentContextDeltaSel(st, task, seen, nil, "")
 }
 
-// AgentContextDeltaSel is AgentContextDelta with an injectable relevance selector: when
-// sel is non-nil it chooses the relevant reference records semantically (v2); nil uses
-// the deterministic v1 token match. An empty/failed selection falls back to v1 so a
-// turn is never starved.
-func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel SelectorFunc) (string, map[string]int64) {
+// AgentContextDeltaSel is AgentContextDelta with an injectable relevance selector and a
+// focus repo: when sel is non-nil it chooses the relevant reference records semantically
+// (v2); nil uses the deterministic v1 token match. focus (a repo/group) boosts that
+// repo's matched records. An empty/failed selection falls back to v1 so a turn is never
+// starved.
+func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel SelectorFunc, focus string) (string, map[string]int64) {
 	nowSeen := make(map[string]int64, len(seen))
 	for k, v := range seen {
 		nowSeen[k] = v
@@ -472,7 +531,7 @@ func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel Sele
 				}
 				cand = append(cand, r) // new or changed & relevant
 			}
-			kept, overflow = rankAndCap(cand, toks)
+			kept, overflow = rankAndCap(cand, toks, focus)
 			for _, r := range kept { // mark ONLY what we actually inject as seen
 				nowSeen[r.ID] = r.UpdatedAt
 				newRefs++

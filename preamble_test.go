@@ -293,7 +293,7 @@ func TestAgentContextForTaskSel(t *testing.T) {
 		gotKeys = keys
 		return []string{"billing/checkout"}
 	}
-	ctx := AgentContextForTaskSel(m, "a long rambling paragraph about money movement", sel)
+	ctx := AgentContextForTaskSel(m, "a long rambling paragraph about money movement", sel, "")
 
 	if len(gotKeys) != 2 {
 		t.Errorf("selector should get both reference keys, got %v", gotKeys)
@@ -309,14 +309,14 @@ func TestAgentContextForTaskSel(t *testing.T) {
 	}
 
 	// Nil selector → v1 token match (a "login" task pulls the login doc, not billing).
-	v1 := AgentContextForTaskSel(m, "fix the login backend", nil)
+	v1 := AgentContextForTaskSel(m, "fix the login backend", nil, "")
 	if !strings.Contains(v1, "auth/login/backend") || strings.Contains(v1, "billing/checkout") {
 		t.Error("nil selector should use v1 token matching")
 	}
 
 	// A selector that returns nothing (model failed) degrades to v1, not starvation:
 	// the "login" task still pulls the login doc via token fallback.
-	empty := AgentContextForTaskSel(m, "fix the login backend", func(string, []string) []string { return nil })
+	empty := AgentContextForTaskSel(m, "fix the login backend", func(string, []string) []string { return nil }, "")
 	if !strings.Contains(empty, "auth/login/backend") {
 		t.Error("empty selection should fall back to v1, not starve the agent")
 	}
