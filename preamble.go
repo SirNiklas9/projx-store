@@ -31,14 +31,18 @@ const maxSliceRecords = 12
 // task word that happens to be a repo or directory name doesn't match every symbol under
 // it. For everything else it's the record's key + body (their human path IS meaningful).
 func matchText(r Record) string {
-	body := strings.TrimSpace(r.Body)
-	if strings.HasPrefix(body, "{") && strings.Contains(body, `"anchor"`) {
+	// Code-map records are the AUTO-generated ones keyed `code/<repo>/<path>/<name>`;
+	// match them on their signature + doc, NOT the structural path/anchor. HUMAN records
+	// (docs, ADRs, conventions — any other key) match on their key + body, so a doc keyed
+	// `billing/stripe/webhook` matches the word "webhook".
+	if strings.HasPrefix(r.Key, "code/") {
 		var m struct {
 			Signature string `json:"signature"`
 			Doc       string `json:"doc"`
+			Terms     string `json:"terms"`
 		}
-		if json.Unmarshal([]byte(body), &m) == nil {
-			return m.Signature + " " + m.Doc
+		if json.Unmarshal([]byte(strings.TrimSpace(r.Body)), &m) == nil {
+			return m.Signature + " " + m.Doc + " " + m.Terms
 		}
 	}
 	return r.Key + " " + r.Body

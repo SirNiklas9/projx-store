@@ -90,3 +90,19 @@ func TestSliceBalanceAndFocus(t *testing.T) {
 		t.Errorf("focus=small should surface all 3 small records, got %d", strings.Count(outF, "code/small/"))
 	}
 }
+
+// TestMatchTextIncludesTerms proves the Level-1 body-terms auto-seed: a code-map record
+// whose NAME/signature lack a concept but whose body TERMS carry it is still matched.
+func TestMatchTextIncludesTerms(t *testing.T) {
+	m := NewMem()
+	_ = m.Put(Record{ID: "gate/s", Kind: KGateRule, Scope: ScopeProject, Key: "s", Body: "secret/**"})
+	// A function named "processInbound" (no "webhook" in name/sig) whose BODY terms include it.
+	_ = m.Put(Record{ID: "map:svc/pi", Kind: KDeclaredStructure, Scope: ScopeProject,
+		Key:  "code/svc/router/processinbound",
+		Body: `{"anchor":"svc/router.go:88","signature":"func processInbound(r *http.Request) error","kind":"func","terms":"webhook stripe constructevent signature verify"}`})
+
+	out := AgentContextForTask(m, "verify the stripe webhook")
+	if !strings.Contains(out, "svc/router.go:88") {
+		t.Error("body-terms auto-seed failed: a webhook concept buried in processInbound was not matched")
+	}
+}
