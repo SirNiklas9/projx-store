@@ -10,10 +10,15 @@ import "strings"
 // FloorRoutes are the default class -> launch-command tiers seeded into every
 // project. The model IDs live HERE, once — not hardcoded in the engine binary, so
 // updating a tier is a store edit, not a recompile.
+// The tier commands launch an AUTONOMOUS worker: --permission-mode acceptEdits lets it
+// apply file edits without an interactive approval (a dispatched worker is headless — no
+// one is there to click "allow"). ProjX's own PreToolUse gate (off-limits paths + the
+// optional cage) remains the real guardrail. Model IDs live HERE, once (store-editable).
 var FloorRoutes = []SeedRec{
-	{"cheap-fast", "claude --model claude-haiku-4-5-20251001"},     // mechanical: moves, grep, format, classify
-	{"default", "claude --model claude-sonnet-4-6"},                // standard: code, tests, review
-	{"deep-reasoning", "claude --model claude-opus-4-8"},           // hard: architecture, multi-file, debugging
+	{"cheap-fast", "claude --permission-mode acceptEdits --model claude-haiku-4-5-20251001"}, // mechanical: moves, grep, format
+	{"default", "claude --permission-mode acceptEdits --model claude-sonnet-4-6"},            // standard: code, tests, review
+	{"deep-reasoning", "claude --permission-mode acceptEdits --model claude-opus-4-8"},       // hard: architecture, debugging
+	{"elevate", "claude --permission-mode acceptEdits --model claude-fable-5"},               // top rung — DELIBERATE only (@elevate / pin / floor)
 }
 
 // deepKeywords / cheapKeywords are the BUILT-IN floor signals for the deterministic
@@ -101,10 +106,13 @@ func routeCmd(s Store, class string) string {
 	return ""
 }
 
-// classRank orders the tiers cheap → standard → deep, so floor (a minimum) and
-// escalate-on-uncertainty (go up one) are simple integer moves. Unknown classes
+// classRank orders the tiers cheap → standard → deep → elevate, so floor (a minimum)
+// and escalate-on-uncertainty (go up one) are simple integer moves. Unknown classes
 // rank as "default" (1) so a typo never silently routes to the cheapest tier.
-var classRank = map[string]int{"cheap-fast": 0, "default": 1, "deep-reasoning": 2}
+// elevate IS a valid, rankable tier (so `route pin/floor elevate` and @elevate work),
+// but it is deliberately OMITTED from tierByRank below so auto escalate-on-uncertainty
+// tops out at deep-reasoning (opus) — the priciest model is opt-in, never accidental.
+var classRank = map[string]int{"cheap-fast": 0, "default": 1, "deep-reasoning": 2, "elevate": 3}
 
 var tierByRank = []string{"cheap-fast", "default", "deep-reasoning"}
 
@@ -176,7 +184,7 @@ type TriageFunc func(task string) (class string, confident bool)
 
 // RouteDecision is the resolved routing choice plus how it was reached.
 type RouteDecision struct {
-	Class  string // cheap-fast | default | deep-reasoning
+	Class  string // cheap-fast | default | deep-reasoning | elevate
 	Cmd    string // launch command from the KRoute tier map ("" if none)
 	Source string // override | pin | keyword | triage | triage-escalated | default (+floor)
 	Reason string // short human explanation
@@ -244,6 +252,8 @@ func taskTierOverride(task string) (class string, ok bool) {
 		return "default", true
 	case strings.Contains(t, "@opus"), strings.Contains(t, "@deep"):
 		return "deep-reasoning", true
+	case strings.Contains(t, "@elevate"), strings.Contains(t, "@fable"):
+		return "elevate", true
 	}
 	return "", false
 }
