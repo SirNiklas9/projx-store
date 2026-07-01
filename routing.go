@@ -21,10 +21,19 @@ var FloorRoutes = []SeedRec{
 // domain vocabulary via store records (see ClassifyStore) — "one definition of
 // anything", tunable by `store commit`, not a recompile.
 var (
-	deepKeywords = []string{"design", "architect", "architecture", "refactor", "why", "plan",
-		"debug", "diagnose", "analyse", "analyze", "redesign", "strategy", "tradeoff", "trade-off"}
+	// NB: "refactor" is deliberately NOT here — a routine refactor is standard coding
+	// (default → sonnet), not deep reasoning. Cross-file/architecture-level refactors get
+	// caught by "architecture"/"redesign", or a project can add "refactor" back via a
+	// store keyword record. "rewrite"/"re-architect" stay deep.
+	deepKeywords = []string{"design", "architect", "architecture", "re-architect", "rewrite",
+		"why", "plan", "debug", "diagnose", "analyse", "analyze", "redesign", "strategy",
+		"tradeoff", "trade-off"}
 	cheapKeywords = []string{"rename", "typo", "format", "comment", "small", "trivial",
 		"one-liner", "oneliner", "quick fix", "quickfix", "spelling"}
+	// stdKeywords positively route standard coding work to the default tier (sonnet) — a
+	// CONFIDENT match, so the decider takes it for free and does NOT fall through to
+	// triage. A routine refactor/implement lives here; escalate only on the deep signals.
+	stdKeywords = []string{"refactor", "implement", "rework", "reimplement"}
 )
 
 // ClassifyConfident maps a task to a capability class by keyword and reports whether
@@ -33,7 +42,7 @@ var (
 // keyword route from the ambiguous middle that warrants cheap model triage.
 // Deterministic; no LLM. Priority: deep-reasoning > cheap-fast > default.
 func ClassifyConfident(task string) (class string, matched bool) {
-	return classifyWith(task, deepKeywords, cheapKeywords)
+	return classifyWith(task, deepKeywords, cheapKeywords, stdKeywords)
 }
 
 // Classify is the back-compat single-return classifier (the class only).
@@ -50,17 +59,23 @@ func ClassifyStore(s Store, task string) (class string, matched bool) {
 	}
 	deep := append(append([]string{}, deepKeywords...), storeKeywords(s, "deep-reasoning")...)
 	cheap := append(append([]string{}, cheapKeywords...), storeKeywords(s, "cheap-fast")...)
-	return classifyWith(task, deep, cheap)
+	std := append(append([]string{}, stdKeywords...), storeKeywords(s, "default")...)
+	return classifyWith(task, deep, cheap, std)
 }
 
-// classifyWith is the shared keyword match: deep beats cheap beats default.
-func classifyWith(task string, deep, cheap []string) (string, bool) {
+// classifyWith is the shared keyword match: deep beats cheap beats a CONFIDENT default
+// (std keyword) beats the no-signal fall-through. A std match returns ("default", true)
+// so the decider takes sonnet for free instead of escalating via triage.
+func classifyWith(task string, deep, cheap, std []string) (string, bool) {
 	t := strings.ToLower(task)
 	if containsAny(t, deep...) {
 		return "deep-reasoning", true
 	}
 	if containsAny(t, cheap...) {
 		return "cheap-fast", true
+	}
+	if containsAny(t, std...) {
+		return "default", true
 	}
 	return "default", false
 }

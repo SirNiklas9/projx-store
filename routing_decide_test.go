@@ -31,7 +31,7 @@ func TestRouteDecideLadder(t *testing.T) {
 	t.Run("keyword match routes free, no triage", func(t *testing.T) {
 		m := NewMem()
 		seedTierMap(t, m)
-		d := RouteDecide(m, "please refactor the auth module", failTriage(t))
+		d := RouteDecide(m, "please redesign the auth module", failTriage(t))
 		if d.Class != "deep-reasoning" || d.Source != "keyword" {
 			t.Fatalf("got %+v, want deep-reasoning/keyword", d)
 		}
@@ -121,8 +121,13 @@ func TestRouteDecideLadder(t *testing.T) {
 
 // TestClassifyConfident covers the matched flag the decider keys on.
 func TestClassifyConfident(t *testing.T) {
-	if c, ok := ClassifyConfident("refactor this"); c != "deep-reasoning" || !ok {
+	if c, ok := ClassifyConfident("redesign this"); c != "deep-reasoning" || !ok {
 		t.Errorf("deep keyword: got %s/%v", c, ok)
+	}
+	// A routine refactor is standard coding → default (sonnet), and a CONFIDENT match
+	// (std keyword) so the decider takes it for free without escalating via triage.
+	if c, ok := ClassifyConfident("refactor this"); c != "default" || !ok {
+		t.Errorf("refactor should be default/true (confident), got %s/%v", c, ok)
 	}
 	if c, ok := ClassifyConfident("rename x"); c != "cheap-fast" || !ok {
 		t.Errorf("cheap keyword: got %s/%v", c, ok)
