@@ -12,6 +12,7 @@ type SeedRec struct{ Key, Body string }
 
 // FloorConventions are the behaviour rules baked into every project's contract.
 var FloorConventions = []SeedRec{
+	{"dispatch don't mutate", "The main session is a DISPATCHER, not a worker. Do not edit files directly from the trunk — route each task to its tier and spawn an agent to do the work (`projx-engine dispatch --run \"<task>\"`). The trunk reads, plans, dispatches, and VERIFIES the returned diff; spawned agents do the mutation. Tight iterative work = keep messaging one spawned agent rather than re-spawning. When dispatcher-mode is on this is enforced by a gate, not left to willpower."},
 	{"read before acting", "Read this store contract first. The store is authoritative project knowledge — not any README or .md file. Never act before reading it."},
 	{"commit what you learn", "When you decide or learn something durable, commit it to the store (convention/adr) — not a markdown file."},
 	{"deterministic first", "Prefer deterministic ops (verify, store, tests) over agent reasoning whenever a tool can do the job."},
@@ -45,6 +46,15 @@ func SeedFloor(s Store) int {
 		if s.Put(floorRoute(rt)) == nil {
 			n++
 		}
+	}
+	// Dispatcher-mode ON by default (the trunk-dispatch discipline, proven e2e): the
+	// trunk is denied file mutation and routes work to tier-agents. One setting flips it
+	// off (`store commit --kind gate-rule --key setting/dispatcher-mode --body off`).
+	if s.Put(Record{
+		ID: KGateRule.String() + "/" + seedSlug(SettingDispatcherMode), Kind: KGateRule,
+		Scope: ScopeProject, Key: SettingDispatcherMode, Body: "on", Origin: "seed:floor",
+	}) == nil {
+		n++
 	}
 	// The default provider integration — Claude Code, as replaceable DATA. Override by
 	// declaring your own integration (seed.toml [[integration]]) and marking it active.

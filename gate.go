@@ -42,3 +42,47 @@ func DenyRules(s Store) []string {
 	}
 	return out
 }
+
+// ── Trunk-dispatch (dispatcher-mode) ─────────────────────────────────────────
+// The interaction law: the main session is a DISPATCHER, never a worker. When
+// dispatcher-mode is ON, the trunk is denied file-mutating tools so every change is
+// routed to a spawned tier-agent; a projx-spawned worker (PROJX_ROLE=worker) is
+// exempt. This is a policy gate — NOT the cage/sandbox (which stays separately
+// opt-in). Stored as a setting gate-rule (skipped by GatePatterns → never a deny glob).
+const SettingDispatcherMode = "setting/dispatcher-mode"
+
+// WorkerDirective is injected at the TOP of a spawned worker's context. A worker is
+// the executor (the hands), not the trunk — but it still receives the project floor,
+// which includes the "dispatch, don't mutate" trunk law. Without this override the
+// worker reads that law and refuses to edit / tries to re-dispatch (role recursion).
+// This reframes it: the worker does the task directly. Injected only when PROJX_ROLE=worker.
+const WorkerDirective = "# YOUR ROLE: WORKER (executor) — READ THIS FIRST\n" +
+	"You are a spawned worker agent, NOT the trunk. Your job is to COMPLETE this task yourself: " +
+	"read, edit files, and run whatever tools are needed, then stop. Editing files is expected and permitted for you.\n" +
+	"The project's \"dispatch, don't mutate\" convention below governs the TRUNK session ONLY — it does NOT apply to you. " +
+	"Do NOT dispatch, delegate, spawn another agent, or ask to — just do the work directly.\n\n---\n\n"
+
+var mutatingTools = map[string]bool{
+	"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true,
+}
+
+// IsMutatingTool reports whether a tool name writes to files.
+func IsMutatingTool(name string) bool { return mutatingTools[strings.TrimSpace(name)] }
+
+// DispatcherModeOn reports whether the trunk-dispatch discipline is enabled (a
+// setting/dispatcher-mode gate-rule with an affirmative body).
+func DispatcherModeOn(s Store) bool {
+	if s == nil {
+		return false
+	}
+	for _, r := range s.List(OfKind(KGateRule)) {
+		if r.Key == SettingDispatcherMode {
+			switch strings.ToLower(strings.TrimSpace(r.Body)) {
+			case "on", "true", "1", "yes":
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
