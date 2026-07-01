@@ -13,11 +13,111 @@ package store
 // function only produces the text.
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"unicode/utf8"
 )
+
+// maxSliceRecords caps how many matched reference records a single section injects, so
+// one over-broad task token can never explode the slice on a large store. Overflow is
+// summarized as a one-line pointer instead of dumped.
+const maxSliceRecords = 12
+
+// matchText returns the text a task's tokens are matched against for relevance. For
+// CODE-MAP records (a JSON body carrying an "anchor") it is the SEMANTIC content —
+// signature + doc — NOT the structural `code/<repo>/<path>` key or the anchor path, so a
+// task word that happens to be a repo or directory name doesn't match every symbol under
+// it. For everything else it's the record's key + body (their human path IS meaningful).
+func matchText(r Record) string {
+	body := strings.TrimSpace(r.Body)
+	if strings.HasPrefix(body, "{") && strings.Contains(body, `"anchor"`) {
+		var m struct {
+			Signature string `json:"signature"`
+			Doc       string `json:"doc"`
+		}
+		if json.Unmarshal([]byte(body), &m) == nil {
+			return m.Signature + " " + m.Doc
+		}
+	}
+	return r.Key + " " + r.Body
+}
+
+// TaskSliceOverflows reports whether the deterministic v1 slice for this task would
+// exceed the per-section cap in any reference section — i.e. the keyword match was
+// AMBIGUOUS (too many hits). Consumers use this to auto-escalate to the semantic v2
+// selector ONLY when v1 is too broad: deterministic-when-easy, model-when-needed.
+func TaskSliceOverflows(st Store, task string) bool {
+	toks := significantTokens(task)
+	if st == nil || len(toks) == 0 {
+		return false
+	}
+	for _, sec := range preambleSections {
+		if sec.full {
+			continue
+		}
+		n := 0
+		for _, r := range dropSettings(st.List(OfKind(sec.kind))) {
+			hay := strings.ToLower(matchText(r))
+			for _, t := range toks {
+				if strings.Contains(hay, t) {
+					n++
+					break
+				}
+			}
+			if n > maxSliceRecords {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rankAndCap scores matched records by how many task tokens they hit (via matchText),
+// keeps the top maxSliceRecords (recency then key as tie-breakers), and reports how many
+// were dropped. Kept records are returned in stable key order for display. This bounds
+// every reference slice regardless of how many records a token matched.
+func rankAndCap(recs []Record, toks []string) (kept []Record, overflow int) {
+	type scored struct {
+		r     Record
+		score int
+	}
+	ss := make([]scored, 0, len(recs))
+	for _, r := range recs {
+		hay := strings.ToLower(matchText(r))
+		n := 0
+		for _, t := range toks {
+			if strings.Contains(hay, t) {
+				n++
+			}
+		}
+		ss = append(ss, scored{r, n})
+	}
+	sort.SliceStable(ss, func(i, j int) bool {
+		if ss[i].score != ss[j].score {
+			return ss[i].score > ss[j].score
+		}
+		if ss[i].r.UpdatedAt != ss[j].r.UpdatedAt {
+			return ss[i].r.UpdatedAt > ss[j].r.UpdatedAt
+		}
+		return ss[i].r.Key < ss[j].r.Key
+	})
+	if len(ss) > maxSliceRecords {
+		overflow = len(ss) - maxSliceRecords
+		ss = ss[:maxSliceRecords]
+	}
+	for _, s := range ss {
+		kept = append(kept, s.r)
+	}
+	sort.Slice(kept, func(i, j int) bool {
+		if kept[i].Key != kept[j].Key {
+			return kept[i].Key < kept[j].Key
+		}
+		return kept[i].ID < kept[j].ID
+	})
+	return kept, overflow
+}
 
 // preambleFullBodyCap is the maximum body length (bytes) for a record in a FULL
 // section. Records exceeding this are demoted to index lines even in full
@@ -160,7 +260,7 @@ func AgentContextForTaskSel(st Store, task string, sel SelectorFunc) string {
 	}
 
 	tokenMatch := func(r Record) bool {
-		hay := strings.ToLower(r.Key + "\n" + r.Body)
+		hay := strings.ToLower(matchText(r)) // match on symbol name/sig/doc, not the path
 		for _, t := range toks {
 			if strings.Contains(hay, t) {
 				return true
@@ -196,24 +296,26 @@ func AgentContextForTaskSel(st Store, task string, sel SelectorFunc) string {
 	wroteAny := false
 	for _, sec := range preambleSections {
 		recs := dropSettings(st.List(OfKind(sec.kind)))
-		if !sec.full { // reference section → keep only task-relevant records
-			kept := recs[:0:0]
+		overflow := 0
+		if !sec.full { // reference: keep task-relevant, then rank+cap so it can't explode
+			matched := recs[:0:0]
 			for _, r := range recs {
 				if matchAny(r) {
-					kept = append(kept, r)
+					matched = append(matched, r)
 				}
 			}
-			recs = kept
+			recs, overflow = rankAndCap(matched, toks)
+		} else {
+			sort.Slice(recs, func(i, j int) bool {
+				if recs[i].Key != recs[j].Key {
+					return recs[i].Key < recs[j].Key
+				}
+				return recs[i].ID < recs[j].ID
+			})
 		}
 		if len(recs) == 0 {
 			continue
 		}
-		sort.Slice(recs, func(i, j int) bool {
-			if recs[i].Key != recs[j].Key {
-				return recs[i].Key < recs[j].Key
-			}
-			return recs[i].ID < recs[j].ID
-		})
 		wroteAny = true
 		fmt.Fprintf(&b, "\n## %s\n", sec.header)
 		if !sec.full {
@@ -225,6 +327,9 @@ func AgentContextForTaskSel(st Store, task string, sel SelectorFunc) string {
 			} else {
 				renderPreambleIndexRecord(&b, sec.kind, r)
 			}
+		}
+		if overflow > 0 {
+			fmt.Fprintf(&b, "- _(+%d more matched this task — run `store query` to load)_\n", overflow)
 		}
 	}
 	if !wroteAny {
@@ -318,7 +423,7 @@ func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel Sele
 		if len(toks) == 0 { // no slicing signal → treat all reference as relevant
 			return true
 		}
-		hay := strings.ToLower(r.Key + "\n" + r.Body)
+		hay := strings.ToLower(matchText(r)) // match on symbol name/sig/doc, not the path
 		for _, t := range toks {
 			if strings.Contains(hay, t) {
 				return true
@@ -343,12 +448,20 @@ func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel Sele
 	for _, sec := range preambleSections {
 		recs := dropSettings(st.List(OfKind(sec.kind)))
 		var kept []Record
+		overflow := 0
 		if sec.full { // LAW: always re-sent in full, never delta-suppressed
 			kept = recs
 			for _, r := range recs {
 				nowSeen[r.ID] = r.UpdatedAt
 			}
-		} else { // reference: only task-relevant AND new/changed vs seen
+			sort.Slice(kept, func(i, j int) bool {
+				if kept[i].Key != kept[j].Key {
+					return kept[i].Key < kept[j].Key
+				}
+				return kept[i].ID < kept[j].ID
+			})
+		} else { // reference: task-relevant AND new/changed, then rank+cap
+			var cand []Record
 			for _, r := range recs {
 				if !relevant(r) {
 					continue
@@ -357,7 +470,10 @@ func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel Sele
 					nowSeen[r.ID] = r.UpdatedAt // unchanged, already shown — keep, skip render
 					continue
 				}
-				kept = append(kept, r)
+				cand = append(cand, r) // new or changed & relevant
+			}
+			kept, overflow = rankAndCap(cand, toks)
+			for _, r := range kept { // mark ONLY what we actually inject as seen
 				nowSeen[r.ID] = r.UpdatedAt
 				newRefs++
 			}
@@ -365,12 +481,6 @@ func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel Sele
 		if len(kept) == 0 {
 			continue
 		}
-		sort.Slice(kept, func(i, j int) bool {
-			if kept[i].Key != kept[j].Key {
-				return kept[i].Key < kept[j].Key
-			}
-			return kept[i].ID < kept[j].ID
-		})
 		fmt.Fprintf(&body, "\n## %s\n", sec.header)
 		if !sec.full {
 			body.WriteString("_(indexed — run `projx-engine store get <id>` to load full content)_\n")
@@ -381,6 +491,9 @@ func AgentContextDeltaSel(st Store, task string, seen map[string]int64, sel Sele
 			} else {
 				renderPreambleIndexRecord(&body, sec.kind, r)
 			}
+		}
+		if overflow > 0 {
+			fmt.Fprintf(&body, "- _(+%d more matched this task — run `store query` to load)_\n", overflow)
 		}
 	}
 
