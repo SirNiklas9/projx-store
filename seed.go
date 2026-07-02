@@ -64,6 +64,35 @@ func SeedFloor(s Store) int {
 	if s.Put(IntegrationActiveRecord(DefaultIntegration.Name)) == nil {
 		n++
 	}
+	// Cage stays OPT-IN (seeded "off" so the setting is discoverable via `store list`,
+	// not just implicitly absent) — flip per-project with `store commit --kind gate-rule
+	// --key setting/cage-mode --body on`, or override per-launch with PROJX_CAGE.
+	if s.Put(Record{
+		ID: KGateRule.String() + "/" + seedSlug(SettingCageMode), Kind: KGateRule,
+		Scope: ScopeProject, Key: SettingCageMode, Body: "off", Origin: "seed:floor",
+	}) == nil {
+		n++
+	}
+	// The worker directive — EDITABLE, not hardcoded: `store commit --kind convention
+	// --key setting/worker-directive --body "…"` changes what a spawned worker is told,
+	// no recompile.
+	if s.Put(Record{
+		ID: KConvention.String() + "/" + seedSlug(SettingWorkerDirective), Kind: KConvention,
+		Scope: ScopeProject, Key: SettingWorkerDirective, Body: DefaultWorkerDirective, Origin: "seed:floor",
+	}) == nil {
+		n++
+	}
+	// The classifier's keyword vocabulary — seeded so it's a real, editable rule (see
+	// ClassifyStore): after this, adding/removing a word here actually changes routing.
+	for _, kw := range FloorKeywordSeeds {
+		key := settingRouteKeywords + "/" + kw.Key
+		if s.Put(Record{
+			ID: KRoute.String() + "/" + seedSlug(key), Kind: KRoute,
+			Scope: ScopeProject, Key: key, Body: kw.Body, Origin: "seed:floor",
+		}) == nil {
+			n++
+		}
+	}
 	return n
 }
 

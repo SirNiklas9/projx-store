@@ -51,16 +51,41 @@ func DenyRules(s Store) []string {
 // opt-in). Stored as a setting gate-rule (skipped by GatePatterns → never a deny glob).
 const SettingDispatcherMode = "setting/dispatcher-mode"
 
-// WorkerDirective is injected at the TOP of a spawned worker's context. A worker is
-// the executor (the hands), not the trunk — but it still receives the project floor,
-// which includes the "dispatch, don't mutate" trunk law. Without this override the
-// worker reads that law and refuses to edit / tries to re-dispatch (role recursion).
-// This reframes it: the worker does the task directly. Injected only when PROJX_ROLE=worker.
-const WorkerDirective = "# YOUR ROLE: WORKER (executor) — READ THIS FIRST\n" +
+// SettingWorkerDirective keys the EDITABLE worker-role directive: the text prepended
+// to a spawned worker's context (PROJX_ROLE=worker) so it reframes the trunk's
+// "dispatch, don't mutate" law as not-its-own and does the task directly instead of
+// re-dispatching. Seeded at floor time with DefaultWorkerDirective as its body — edit
+// it with `store commit --kind convention --key setting/worker-directive --body "…"`,
+// no recompile needed. Key starts with "setting/" so dropSettings excludes it from
+// normal preamble rendering (only WorkerDirectiveText's explicit fetch surfaces it).
+const SettingWorkerDirective = "setting/worker-directive"
+
+// DefaultWorkerDirective is the SEED content for the worker directive, and the
+// fallback WorkerDirectiveText returns when the store has no record yet (a legacy
+// project that hasn't re-seeded, or the store is briefly unreachable) — so a worker
+// is never left without this reframing just because the record is missing.
+const DefaultWorkerDirective = "# YOUR ROLE: WORKER (executor) — READ THIS FIRST\n" +
 	"You are a spawned worker agent, NOT the trunk. Your job is to COMPLETE this task yourself: " +
 	"read, edit files, and run whatever tools are needed, then stop. Editing files is expected and permitted for you.\n" +
 	"The project's \"dispatch, don't mutate\" convention below governs the TRUNK session ONLY — it does NOT apply to you. " +
 	"Do NOT dispatch, delegate, spawn another agent, or ask to — just do the work directly.\n\n---\n\n"
+
+// WorkerDirectiveText returns the declared worker directive from the store (the
+// setting/worker-directive convention), or DefaultWorkerDirective if s is nil, the
+// record is absent, or its body is blank.
+func WorkerDirectiveText(s Store) string {
+	if s != nil {
+		for _, r := range s.List(OfKind(KConvention)) {
+			if r.Key == SettingWorkerDirective {
+				if body := strings.TrimSpace(r.Body); body != "" {
+					return r.Body
+				}
+				break
+			}
+		}
+	}
+	return DefaultWorkerDirective
+}
 
 var mutatingTools = map[string]bool{
 	"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true,
@@ -68,6 +93,30 @@ var mutatingTools = map[string]bool{
 
 // IsMutatingTool reports whether a tool name writes to files.
 func IsMutatingTool(name string) bool { return mutatingTools[strings.TrimSpace(name)] }
+
+// SettingCageMode is the DECLARED, project-level default for OS-level agent
+// confinement. Cage stays opt-in — this setting only lets a project turn it ON by
+// default (seeded "off"); the PROJX_CAGE env var, when set, always overrides it
+// explicitly for one launch. Not the gate/dispatcher-mode axis — orthogonal.
+const SettingCageMode = "setting/cage-mode"
+
+// CageModeOn reports whether a project has declared cage-mode ON by default (a
+// setting/cage-mode gate-rule with an affirmative body); false (uncaged) if absent.
+func CageModeOn(s Store) bool {
+	if s == nil {
+		return false
+	}
+	for _, r := range s.List(OfKind(KGateRule)) {
+		if r.Key == SettingCageMode {
+			switch strings.ToLower(strings.TrimSpace(r.Body)) {
+			case "on", "true", "1", "yes":
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
 
 // DispatcherModeOn reports whether the trunk-dispatch discipline is enabled (a
 // setting/dispatcher-mode gate-rule with an affirmative body).

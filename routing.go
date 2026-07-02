@@ -41,6 +41,18 @@ var (
 	stdKeywords = []string{"refactor", "implement", "rework", "reimplement"}
 )
 
+// FloorKeywordSeeds seed the classifier's built-in vocabulary into the store as
+// EDITABLE setting/route-keywords/<class> records ("make it a rule, not a hardcode"):
+// once seeded, ClassifyStore reads ONLY the store's copy, so removing or adding a
+// word actually changes routing — not just extends it. deepKeywords/cheapKeywords/
+// stdKeywords above remain the seed DEFAULTS and the fallback for a store that hasn't
+// been (re-)seeded yet (see ClassifyStore).
+var FloorKeywordSeeds = []SeedRec{
+	{"deep-reasoning", strings.Join(deepKeywords, " ")},
+	{"cheap-fast", strings.Join(cheapKeywords, " ")},
+	{"default", strings.Join(stdKeywords, " ")},
+}
+
 // ClassifyConfident maps a task to a capability class by keyword and reports whether
 // a keyword actually MATCHED (true) or the task fell through to the default class with
 // no signal (false). The matched flag is what the decider uses to tell a confident
@@ -53,18 +65,29 @@ func ClassifyConfident(task string) (class string, matched bool) {
 // Classify is the back-compat single-return classifier (the class only).
 func Classify(task string) string { c, _ := ClassifyConfident(task); return c }
 
-// ClassifyStore is ClassifyConfident augmented with a project's OWN keyword signals,
-// declared as KRoute records keyed `setting/route-keywords/<class>` (Body = extra
-// words, whitespace/comma separated). The built-in floor lists always apply; the
-// store signals extend them. This is the editable classifier: tune routing with a
-// store commit, never a recompile. A nil store == ClassifyConfident.
+// ClassifyStore is the store-driven classifier: for EACH class independently, it
+// reads that class's vocabulary from the store's `setting/route-keywords/<class>`
+// record if one exists — so editing that class's word list with `store commit`
+// genuinely changes routing for it, not just extends a hardcoded list underneath.
+// A class with NO store record (never seeded, or this class specifically) falls back
+// to that class's built-in default — PER CLASS, not all-or-nothing, so a project with
+// only ONE class seeded (partial/legacy state) doesn't silently lose the other two.
+// A nil store == ClassifyConfident. Honest caveat: this means a class can't be edited
+// down to a literal empty vocabulary (an empty/absent record reads as "unseeded" and
+// falls back to defaults) — pick different words instead of blanking one out.
 func ClassifyStore(s Store, task string) (class string, matched bool) {
 	if s == nil {
 		return ClassifyConfident(task)
 	}
-	deep := append(append([]string{}, deepKeywords...), storeKeywords(s, "deep-reasoning")...)
-	cheap := append(append([]string{}, cheapKeywords...), storeKeywords(s, "cheap-fast")...)
-	std := append(append([]string{}, stdKeywords...), storeKeywords(s, "default")...)
+	pick := func(class string, fallback []string) []string {
+		if kw := storeKeywords(s, class); len(kw) > 0 {
+			return kw
+		}
+		return fallback
+	}
+	deep := pick("deep-reasoning", deepKeywords)
+	cheap := pick("cheap-fast", cheapKeywords)
+	std := pick("default", stdKeywords)
 	return classifyWith(task, deep, cheap, std)
 }
 
