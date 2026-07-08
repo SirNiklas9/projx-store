@@ -118,6 +118,32 @@ func CageModeOn(s Store) bool {
 	return false
 }
 
+// SettingOverrideAuthority keys the HUMAN-CONTROLLED delegation flag that decides
+// whether the AI may override a soft rule at all. Default OFF: the AI can REQUEST an
+// override but must not self-grant one. The human delegates by setting this ON (which,
+// like the override itself, only they can do out-of-band — the hook blocks the AI from
+// flipping it). See doc/enforcement-follow-override-plan and the override-authority ADR.
+const SettingOverrideAuthority = "setting/override-authority"
+
+// OverrideAuthorityOn reports whether the human has delegated override authority to the
+// AI (a setting/override-authority gate-rule with an affirmative body). Default false —
+// absent means NOT delegated, so the AI cannot self-authorize a bypass.
+func OverrideAuthorityOn(s Store) bool {
+	if s == nil {
+		return false
+	}
+	for _, r := range s.List(OfKind(KGateRule)) {
+		if r.Key == SettingOverrideAuthority {
+			switch strings.ToLower(strings.TrimSpace(r.Body)) {
+			case "on", "true", "1", "yes":
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
 // DispatcherModeOn reports whether the trunk-dispatch discipline is enabled (a
 // setting/dispatcher-mode gate-rule with an affirmative body).
 func DispatcherModeOn(s Store) bool {
