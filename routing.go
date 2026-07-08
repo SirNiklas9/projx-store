@@ -51,6 +51,7 @@ var FloorKeywordSeeds = []SeedRec{
 	{"deep-reasoning", strings.Join(deepKeywords, " ")},
 	{"cheap-fast", strings.Join(cheapKeywords, " ")},
 	{"default", strings.Join(stdKeywords, " ")},
+	{"risk", strings.Join(riskKeywords, " ")}, // correctness-critical → floor = deep-reasoning
 }
 
 // ClassifyConfident maps a task to a capability class by keyword and reports whether
@@ -75,6 +76,32 @@ func Classify(task string) string { c, _ := ClassifyConfident(task); return c }
 // A nil store == ClassifyConfident. Honest caveat: this means a class can't be edited
 // down to a literal empty vocabulary (an empty/absent record reads as "unseeded" and
 // falls back to defaults) — pick different words instead of blanking one out.
+// riskKeywords mark correctness-critical work where a cheap model is dangerous — matching
+// any of them raises the routing FLOOR to deep-reasoning (see IsRiskyTask). Broad by
+// design; editable per-project via setting/route-keywords/risk.
+var riskKeywords = []string{
+	"concurren", "goroutine", "mutex", "deadlock", "data race", "atomic", "thread-saf", "thread saf",
+	"serializ", "deserializ", "marshal", "unmarshal", "jsonconverter", "encoding/json",
+	"auth", "authz", "authn", "oauth", "jwt", "token", "crypto", "encrypt", "decrypt", "signature", "password hash",
+	"payment", "billing", "invoice", "stripe", "charge card",
+	"migration", "schema change", "alter table", "drop table", "drop column",
+	"rm -rf", "truncate table", "mass delete", "hard delete",
+}
+
+// IsRiskyTask reports whether a task is correctness-critical (concurrency, serialization,
+// auth/crypto, money, migrations, destructive ops). The decider raises the tier FLOOR to
+// deep-reasoning for these so triage can't send subtle work to a cheap model. The keyword
+// set is editable via the store's setting/route-keywords/risk record (else the built-in).
+func IsRiskyTask(s Store, task string) bool {
+	words := riskKeywords
+	if s != nil {
+		if kw := storeKeywords(s, "risk"); len(kw) > 0 {
+			words = kw
+		}
+	}
+	return containsAny(strings.ToLower(task), words...)
+}
+
 func ClassifyStore(s Store, task string) (class string, matched bool) {
 	if s == nil {
 		return ClassifyConfident(task)
@@ -228,11 +255,24 @@ type RouteDecision struct {
 // Pure given a pure triage func; deterministic when triage is nil.
 func RouteDecide(s Store, task string, triage TriageFunc) RouteDecision {
 	floor := settingBody(s, SettingRouteFloor)
+	// RISK-FLOOR: correctness-critical work (concurrency, serialization, auth/crypto, money,
+	// migrations, destructive ops) forces a deep-reasoning MINIMUM so triage/keywords can't
+	// send subtle code to a cheap model. It raises the floor; it never lowers a higher one,
+	// and (like the configured floor) it doesn't override an explicit @-override or pin.
+	riskFloor := false
+	if IsRiskyTask(s, task) && rankOf("deep-reasoning") > rankOf(floor) {
+		floor, riskFloor = "deep-reasoning", true
+	}
 	resolve := func(class, source, reason string, applyFloor bool) RouteDecision {
 		if applyFloor && validTier(floor) && rankOf(class) < rankOf(floor) {
 			class = floor
-			source += "+floor"
-			reason += " (raised to floor " + floor + ")"
+			if riskFloor {
+				source += "+risk-floor"
+				reason += " (risk-floor: correctness-critical → " + floor + ")"
+			} else {
+				source += "+floor"
+				reason += " (raised to floor " + floor + ")"
+			}
 		}
 		return RouteDecision{Class: class, Cmd: routeCmd(s, class), Source: source, Reason: reason}
 	}

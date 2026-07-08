@@ -13,12 +13,12 @@ func TestDecompose(t *testing.T) {
 	}{
 		{"single task untouched", "rename the config var", []string{"rename the config var"}},
 		{
-			"then chain with filler stripped",
+			"prose 'then' chain is ONE task (no connector split)",
 			"we need to rename this, and then we need to design the cache, then refactor the auth module",
-			[]string{"rename this", "design the cache", "refactor the auth module"},
+			[]string{"we need to rename this, and then we need to design the cache, then refactor the auth module"},
 		},
 		{"numbered list", "1. rename foo\n2) add tests\n3. design the api", []string{"rename foo", "add tests", "design the api"}},
-		{"semicolons", "fix the typo; write the test; document it", []string{"fix the typo", "write the test", "document it"}},
+		{"prose semicolons stay ONE task", "fix the typo; write the test; document it", []string{"fix the typo; write the test; document it"}},
 		{"bullets", "- rename foo\n- refactor bar", []string{"rename foo", "refactor bar"}},
 		{"empty", "   ", nil},
 		{"no over-split on bare comma", "rename foo, bar, and baz", []string{"rename foo, bar, and baz"}},
