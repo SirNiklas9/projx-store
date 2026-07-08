@@ -86,5 +86,8 @@ func rowToRecord(row []any) Record {
 		r.UpdatedAt = asInt64(row[5])
 		r.Origin = asText(row[6])
 	}
+	if len(row) >= 8 {
+		r.Enforcement = asText(row[7])
+	}
 	return r
 }

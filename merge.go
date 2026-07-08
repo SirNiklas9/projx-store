@@ -45,7 +45,8 @@ type MergeResult struct {
 
 // content reports whether two records carry the same meaning (ignoring merge metadata).
 func sameContent(a, b Record) bool {
-	return a.Kind == b.Kind && a.Scope == b.Scope && a.Key == b.Key && a.Body == b.Body
+	return a.Kind == b.Kind && a.Scope == b.Scope && a.Key == b.Key && a.Body == b.Body &&
+		a.Enforcement == b.Enforcement
 }
 
 // Merge consolidates `incoming` into `base` by ID:

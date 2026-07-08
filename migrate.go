@@ -24,6 +24,9 @@ var migrations = []string{
 	`ALTER TABLE records ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`,
 	// 3: which brain/machine authored the record (for origin-aware merge; "" = unknown).
 	`ALTER TABLE records ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+	// 4: enforcement tier (hard|soft|advisory; "" = derive by identity). Existing rows
+	// back-fill to "" and keep behaving via Tier's derivation — no data migration needed.
+	`ALTER TABLE records ADD COLUMN enforcement TEXT NOT NULL DEFAULT ''`,
 }
 
 // migrate brings the connection up to the latest schema version, applying any

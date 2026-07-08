@@ -102,6 +102,12 @@ type Record struct {
 	// so last-write-wins holds across machines. Origin = which brain/machine wrote it.
 	UpdatedAt int64
 	Origin    string
+	// Enforcement tiers how strictly this rule is applied: "hard" (gate denies, no
+	// override — the secrets/off-limits floor), "soft" (denies by default but a
+	// recorded, reasoned override may proceed), or "advisory" (context-injected, not
+	// gated). Empty means "derive by identity" (see Tier) so rows written before this
+	// column existed behave correctly with no data backfill. Persisted since schema #4.
+	Enforcement string
 }
 
 // nowMillis returns current unix milliseconds. A package var so tests can pin it.
