@@ -34,3 +34,9 @@ go test ./...
 # wasm gate
 GOOS=wasip1 GOARCH=wasm go build ./...
 ```
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 SirNiklas9.
