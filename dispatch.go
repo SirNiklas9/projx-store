@@ -29,23 +29,78 @@ var decomposeConnectors = []string{
 // trimmed message) when there is no clear split — so a normal one-task message is
 // untouched. Deterministic and order-preserving.
 func Decompose(message string) []string {
-	work := message
-	for _, c := range decomposeConnectors {
-		work = strings.ReplaceAll(work, c, "\x00") // unify to one delimiter
-	}
-	var out []string
-	for _, part := range strings.Split(work, "\x00") {
-		if t := cleanTaskFragment(part); t != "" {
-			out = append(out, t)
+	// Split ONLY on EXPLICIT task delimiters — a leading bullet ("- ", "* "), an ordered
+	// marker ("1.", "2)"), a "TASK:"/"STEP:" prefix, or a "---"/"===" separator line. Prose
+	// punctuation (colons, periods) NEVER splits: a single-intent spec stays ONE task. This
+	// replaces the old connector-splitting that shredded one cohesive change into fragments.
+	lines := strings.Split(message, "\n")
+	var tasks []string
+	var cur strings.Builder
+	flush := func() {
+		if t := cleanTaskFragment(cur.String()); t != "" {
+			tasks = append(tasks, t)
 		}
+		cur.Reset()
 	}
-	if len(out) == 0 {
+	delimited := false
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "---" || t == "===" || strings.HasPrefix(t, "---") || strings.HasPrefix(t, "===") {
+			delimited = true
+			flush()
+			continue
+		}
+		if marker := taskDelimiterPrefix(t); marker >= 0 {
+			delimited = true
+			flush()
+			cur.WriteString(t[marker:])
+			cur.WriteByte('\n')
+			continue
+		}
+		cur.WriteString(ln)
+		cur.WriteByte('\n')
+	}
+	flush()
+
+	// No explicit delimiters → single-intent → exactly ONE task (never split prose).
+	if !delimited {
 		if t := strings.TrimSpace(message); t != "" {
 			return []string{t}
 		}
 		return nil
 	}
-	return out
+	if len(tasks) == 0 {
+		if t := strings.TrimSpace(message); t != "" {
+			return []string{t}
+		}
+	}
+	return tasks
+}
+
+// taskDelimiterPrefix returns the byte offset AFTER an explicit task-delimiter marker at
+// the start of a trimmed line ("- ", "* ", "TASK:", "STEP:", "1.", "2)"), or -1 if none.
+func taskDelimiterPrefix(t string) int {
+	switch {
+	case strings.HasPrefix(t, "- "), strings.HasPrefix(t, "* "):
+		return 2
+	}
+	for _, p := range []string{"task:", "step:"} {
+		if len(t) >= len(p) && strings.ToLower(t[:len(p)]) == p {
+			return len(p)
+		}
+	}
+	// ordered: one or more digits then '.' or ')' then a space
+	i := 0
+	for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+		i++
+	}
+	if i > 0 && i < len(t) && (t[i] == '.' || t[i] == ')') {
+		j := i + 1
+		if j < len(t) && t[j] == ' ' {
+			return j + 1
+		}
+	}
+	return -1
 }
 
 // cleanTaskFragment trims a fragment and strips a leading list marker (1. / 2) / - / *)
