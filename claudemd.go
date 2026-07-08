@@ -97,12 +97,25 @@ func renderManagedBody(st Store) string {
 	return b.String()
 }
 
-// dropSettings removes setting/* records — config/secrets NEVER belong in CLAUDE.md.
+// dropSettings removes setting/* records (config/secrets NEVER belong in rendered
+// output) AND deduplicates by content: a rule with the same kind+body appearing in more
+// than one scope (e.g. the secrets/off-limits floor seeded at BOTH global and project
+// scope) is rendered ONCE. Without this, composing scopes injects the same gate rule /
+// convention twice every turn (context bloat + two places that can drift). Dedup is by
+// (kind, trimmed body); empty-body records are never collapsed together.
 func dropSettings(recs []Record) []Record {
 	out := make([]Record, 0, len(recs))
+	seen := map[string]bool{}
 	for _, r := range recs {
 		if strings.HasPrefix(r.ID, "setting/") || strings.HasPrefix(r.Key, "setting/") {
 			continue
+		}
+		if body := strings.TrimSpace(r.Body); body != "" {
+			key := r.Kind.String() + "\x00" + body
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		out = append(out, r)
 	}
