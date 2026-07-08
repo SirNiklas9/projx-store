@@ -108,6 +108,11 @@ type Record struct {
 	// gated). Empty means "derive by identity" (see Tier) so rows written before this
 	// column existed behave correctly with no data backfill. Persisted since schema #4.
 	Enforcement string
+	// Provenance records HOW a record's claim was established: "human-confirmed" (a person
+	// committed/approved it), "gate-verified" (the verify gate ran build/test and it passed),
+	// "agent-asserted" (an AI committed it without an independent check), or "" (unknown).
+	// Lets a reader distinguish a proven fact from a narrator's claim. Persisted since #5.
+	Provenance string
 }
 
 // nowMillis returns current unix milliseconds. A package var so tests can pin it.

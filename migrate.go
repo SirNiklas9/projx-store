@@ -24,6 +24,7 @@ var storeMigrations = []sow.Migration{
 	{Version: "0002_updated_at", Name: "last-write clock", Up: `ALTER TABLE records ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`},
 	{Version: "0003_origin", Name: "origin", Up: `ALTER TABLE records ADD COLUMN origin TEXT NOT NULL DEFAULT ''`},
 	{Version: "0004_enforcement", Name: "enforcement tier", Up: `ALTER TABLE records ADD COLUMN enforcement TEXT NOT NULL DEFAULT ''`},
+	{Version: "0005_provenance", Name: "provenance", Up: `ALTER TABLE records ADD COLUMN provenance TEXT NOT NULL DEFAULT ''`},
 }
 
 // sowConn adapts the internal sqlConn seam to sow.Conn. It is deliberately NOT a TxConn:

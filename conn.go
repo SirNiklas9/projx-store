@@ -89,5 +89,8 @@ func rowToRecord(row []any) Record {
 	if len(row) >= 8 {
 		r.Enforcement = asText(row[7])
 	}
+	if len(row) >= 9 {
+		r.Provenance = asText(row[8])
+	}
 	return r
 }
