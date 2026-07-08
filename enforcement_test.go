@@ -48,7 +48,7 @@ func TestTierDerivation(t *testing.T) {
 func TestRuleTierAndSoft(t *testing.T) {
 	s, _ := Open(":memory:")
 	defer s.Close()
-	SeedFloor(s) // seeds dispatcher-mode as soft, gate floor as hard
+	SeedFloor(s) // seeds dispatcher-mode (soft); gates are global-scope now, not project
 
 	if !IsSoftRule(s, "dispatcher-mode") {
 		t.Error("seeded dispatcher-mode should be soft")

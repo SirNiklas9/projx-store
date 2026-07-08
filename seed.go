@@ -10,32 +10,19 @@ import "strings"
 // SeedRec is a key/body pair awaiting a Kind + Scope at seed time.
 type SeedRec struct{ Key, Body string }
 
-// FloorConventions are the behaviour rules baked into every project's contract.
-// This is the standing LAW: it is re-sent in full on EVERY message (see
-// AgentContextFloor / AgentContextDelta), so each entry is paid per-turn — keep
-// bodies terse and keep the set to rules that are correct in ANY repo. Per-language
-// rules belong in stacks (profiles.go); per-repo rules in a project seed.toml.
+// FloorConventions are the PROJECT-scope behaviour rules — only the ones tied to
+// per-project mechanics. Universal law (secrets, engineering discipline, off-limits
+// gates) lives at GLOBAL scope and INHERITS down (global → workspace → project), so it is
+// NOT re-seeded here — each scope declares only its own distinct layer and they compound.
+// Per-language rules belong in stacks (profiles.go); per-repo rules in a project seed.toml.
 var FloorConventions = []SeedRec{
 	{"dispatch don't mutate", "The main session is a DISPATCHER, not a worker. Do not edit files directly from the trunk — route each task to its tier and spawn an agent to do the work (`projx-engine dispatch --run \"<task>\"`). The trunk reads, plans, dispatches, and VERIFIES the returned diff; spawned agents do the mutation. Tight iterative work = keep messaging one spawned agent rather than re-spawning. When dispatcher-mode is on this is enforced by a gate, not left to willpower."},
-	{"read before acting", "Read this store contract first. The store is authoritative project knowledge — not any README or .md file. Never act before reading it."},
-	{"commit what you learn", "When you decide or learn something durable, commit it to the store (convention/adr) — not a markdown file."},
-	{"deterministic first", "Prefer deterministic ops (verify, store, tests) over agent reasoning whenever a tool can do the job."},
-	{"secrets by codename", "Never read, edit, or print secret material. Reference secrets only by codename."},
-	{"verify before done", "Don't report a task complete until you've exercised the change and seen it work — tests green, or the affected flow driven end-to-end. \"Should work\" is not done; run it and confirm before you claim it."},
-	{"smallest change on task", "Change only what the task needs. Don't refactor, rename, or reformat unrelated code — keep the diff small and reviewable so the intent is obvious. Note tangents; don't fold them in."},
-	{"fix don't disable", "Never delete, comment out, weaken, or skip a feature or test just to make something pass. Fix the root cause; if you can't, stop and report it rather than hide it."},
-	{"match the surroundings", "New code reads like the code around it — same naming, structure, and idioms. The existing code is the style guide; don't impose a different one."},
-	{"no irreversible ops unprompted", "Never run destructive or outward-facing commands (force-push, hard reset, history rewrite, mass delete, publish, deploy) without explicit confirmation for that specific action."},
 }
 
-// FloorGates are the off-limits paths every project denies by default.
-var FloorGates = []SeedRec{
-	{"secrets dir", "secret/**"},
-	{"dotenv files", ".env*"},
-	{"private keys", "**/*.key"},
-	{"pem material", "**/*.pem"},
-	{"ssh material", "**/.ssh/**"},
-}
+// FloorGates: NONE at project scope by default. Off-limits gates are universal and are
+// seeded ONCE at GLOBAL scope, inheriting into every workspace/project. A project (or
+// workspace) can still declare its OWN additional gates — they compound on top of global.
+var FloorGates = []SeedRec{}
 
 // SeedFloor writes the floor contract (conventions + gate rules) into s as
 // project-scoped records. Put replaces by ID, so re-seeding is harmless. Returns
