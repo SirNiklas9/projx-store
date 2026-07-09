@@ -87,6 +87,80 @@ func WorkerDirectiveText(s Store) string {
 	return DefaultWorkerDirective
 }
 
+// SettingWorkerAllow keys the DECLARED list of shell commands a dispatched worker may
+// run WITHOUT prompting — the "basic permissions" floor. The body is command names
+// separated by commas / spaces / newlines. Anything NOT listed still prompts (the human
+// grants the rest = "reach and ask for more"). Seeded with DefaultWorkerAllow; change it
+// with `store commit --kind convention --key setting/worker-allow --body "git, go, …"`
+// — no recompile. Key starts with "setting/" so it stays out of normal preamble render.
+const SettingWorkerAllow = "setting/worker-allow"
+
+// DefaultWorkerAllow is the SEED content and the fallback when the record is absent — so
+// a legacy/un-reseeded project still gets a working worker floor. This is DATA (seeded
+// into the store), not a hardcoded policy: the store record is the source of truth and
+// fully editable; this constant only bootstraps it.
+const DefaultWorkerAllow = "git go gofmt goimports make npm npx pnpm yarn node projx-engine cat ls grep rg find sed awk head tail wc"
+
+// WorkerAllowBins returns the declared worker safe-list (setting/worker-allow) as command
+// names, or DefaultWorkerAllow when the store is nil / the record is absent or blank.
+// Separators may be commas, spaces, or newlines so the human can write it naturally.
+func WorkerAllowBins(s Store) []string {
+	body := DefaultWorkerAllow
+	if s != nil {
+		for _, r := range s.List(OfKind(KConvention)) {
+			if r.Key == SettingWorkerAllow {
+				if b := strings.TrimSpace(r.Body); b != "" {
+					body = b
+				}
+				break
+			}
+		}
+	}
+	return splitTokens(body)
+}
+
+// SettingWorkerAutonomy keys the human-granted "full autonomy" escalation for workers.
+// When its body is affirmative ("full"/"on"/"true"), a dispatched worker runs with ALL
+// permissions — the verbal "you're allowed to do whatever you need" override, expressed
+// as data. Default (absent) = basic permissions (the safe-list). The ProjX gate still
+// blocks secrets/off-limits even under full autonomy.
+const SettingWorkerAutonomy = "setting/worker-autonomy"
+
+// WorkerFullAutonomy reports whether the human has granted workers full autonomy (a
+// setting/worker-autonomy gate-rule with an affirmative body). Default false.
+func WorkerFullAutonomy(s Store) bool {
+	if s == nil {
+		return false
+	}
+	for _, r := range s.List(OfKind(KGateRule)) {
+		if r.Key == SettingWorkerAutonomy {
+			switch strings.ToLower(strings.TrimSpace(r.Body)) {
+			case "full", "on", "true", "1", "yes":
+				return true
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// splitTokens splits a human-written list on commas / whitespace / semicolons, trimming
+// blanks and de-duplicating while preserving first-seen order.
+func splitTokens(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	seen := map[string]bool{}
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 var mutatingTools = map[string]bool{
 	"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true,
 }

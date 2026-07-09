@@ -80,6 +80,15 @@ func SeedFloor(s Store) int {
 	}) == nil {
 		n++
 	}
+	// The worker permission floor — the shell commands a dispatched worker may run
+	// unattended — as EDITABLE DATA, not code: `store commit --kind convention --key
+	// setting/worker-allow --body "git, go, …"` widens or narrows it, no recompile.
+	if s.Put(Record{
+		ID: KConvention.String() + "/" + seedSlug(SettingWorkerAllow), Kind: KConvention,
+		Scope: ScopeProject, Key: SettingWorkerAllow, Body: DefaultWorkerAllow, Origin: "seed:floor",
+	}) == nil {
+		n++
+	}
 	// The classifier's keyword vocabulary — seeded so it's a real, editable rule (see
 	// ClassifyStore): after this, adding/removing a word here actually changes routing.
 	for _, kw := range FloorKeywordSeeds {
