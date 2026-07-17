@@ -8,7 +8,16 @@ require (
 )
 
 require (
-	github.com/SirNiklas9/sow v0.1.0
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.10.0 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/text v0.29.0 // indirect
+)
+
+require (
+	github.com/BananaLabs-OSS/sow v0.0.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -21,3 +30,8 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// Local dev resolves sow from the sibling checkout. The published module is now
+// github.com/BananaLabs-OSS/sow; once v0.2.0 is pushed, bump the require above
+// and drop this replace to restore the clean-clone proxy build.
+replace github.com/BananaLabs-OSS/sow => ../sow

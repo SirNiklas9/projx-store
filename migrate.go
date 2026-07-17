@@ -3,7 +3,7 @@ package store
 import (
 	"fmt"
 
-	sow "github.com/SirNiklas9/sow"
+	sow "github.com/BananaLabs-OSS/sow"
 )
 
 // migrate.go — schema migrations, now run by the `sow` engine over the SAME sqlConn seam
