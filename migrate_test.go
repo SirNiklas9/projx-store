@@ -1,6 +1,27 @@
 package store
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestStoreMigrationManifest(t *testing.T) {
+	got, err := loadStoreMigrations()
+	if err != nil {
+		t.Fatalf("loadStoreMigrations: %v", err)
+	}
+	var versions []string
+	for _, migration := range got {
+		versions = append(versions, migration.Version)
+		if migration.Up == "" {
+			t.Fatalf("migration %q has no up SQL", migration.Version)
+		}
+	}
+	want := []string{"0001_records", "0002_updated_at", "0003_origin", "0004_enforcement", "0005_provenance"}
+	if !reflect.DeepEqual(versions, want) {
+		t.Fatalf("migration order = %v, want %v", versions, want)
+	}
+}
 
 // TestMigrationUpgradeV1toCurrent proves the REAL-WORLD upgrade path: a store created at
 // schema v1 (the original 5-column records table) self-upgrades to the current schema on
@@ -23,7 +44,7 @@ func TestMigrationUpgradeV1toCurrent(t *testing.T) {
 	must(`CREATE TABLE records (id TEXT PRIMARY KEY, kind INTEGER, scope INTEGER, rkey TEXT, body TEXT)`)
 	must(`INSERT INTO records (id, kind, scope, rkey, body) VALUES ('old', 1, 0, 'k', 'v1body')`)
 
-	// run the CURRENT migrator -> applies migrations 2 (updated_at) and 3 (origin).
+	// run the CURRENT migrator -> applies every manifest step after v1.
 	if err := migrate(c); err != nil {
 		t.Fatalf("migrate upgrade v1->current: %v", err)
 	}
@@ -38,6 +59,9 @@ func TestMigrationUpgradeV1toCurrent(t *testing.T) {
 	}
 	if got.UpdatedAt != 0 || got.Origin != "" {
 		t.Fatalf("back-fill wrong (want 0/\"\"): %+v", got)
+	}
+	if got.Enforcement != "" || got.Provenance != "" {
+		t.Fatalf("later migration back-fill wrong: %+v", got)
 	}
 
 	// a fresh write after upgrade gets stamped + carries origin

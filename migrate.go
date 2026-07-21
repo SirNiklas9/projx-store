@@ -1,6 +1,7 @@
 package store
 
 import (
+	"embed"
 	"fmt"
 
 	sow "github.com/BananaLabs-OSS/sow"
@@ -11,20 +12,13 @@ import (
 // is driver-agnostic, so this works identically as a plain binary and inside the wasm cell.
 // Forward-only: each step adds one column with a constant DEFAULT so existing rows back-fill.
 
-// storeMigrations are the schema steps in order. Versions are zero-padded so lexical order
-// == apply order. SQL is unchanged from the pre-sow []string; only the runner moved.
-var storeMigrations = []sow.Migration{
-	{Version: "0001_records", Name: "records table", Up: `CREATE TABLE records (
-		id    TEXT PRIMARY KEY,
-		kind  INTEGER,
-		scope INTEGER,
-		rkey  TEXT,
-		body  TEXT
-	)`},
-	{Version: "0002_updated_at", Name: "last-write clock", Up: `ALTER TABLE records ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`},
-	{Version: "0003_origin", Name: "origin", Up: `ALTER TABLE records ADD COLUMN origin TEXT NOT NULL DEFAULT ''`},
-	{Version: "0004_enforcement", Name: "enforcement tier", Up: `ALTER TABLE records ADD COLUMN enforcement TEXT NOT NULL DEFAULT ''`},
-	{Version: "0005_provenance", Name: "provenance", Up: `ALTER TABLE records ADD COLUMN provenance TEXT NOT NULL DEFAULT ''`},
+//go:embed migrations/manifest.json migrations/*.sql
+var storeMigrationFS embed.FS
+
+// loadStoreMigrations reads the shipped plan in its explicitly authored order. Keeping the
+// plan and SQL embedded makes migrations portable to both native and wasm/Pulp backends.
+func loadStoreMigrations() ([]sow.Migration, error) {
+	return sow.LoadManifestFS(storeMigrationFS, "migrations/manifest.json")
 }
 
 // sowConn adapts the internal sqlConn seam to sow.Conn. It is deliberately NOT a TxConn:
@@ -33,17 +27,21 @@ var storeMigrations = []sow.Migration{
 // backends.
 type sowConn struct{ c sqlConn }
 
-func (s sowConn) Exec(query string, args ...any) error          { return s.c.exec(query, args...) }
+func (s sowConn) Exec(query string, args ...any) error             { return s.c.exec(query, args...) }
 func (s sowConn) Query(query string, args ...any) ([][]any, error) { return s.c.query(query, args...) }
 
 // migrate brings the connection up to the latest schema, applying any pending steps via
 // sow. Idempotent: a fully-migrated DB is a no-op.
 func migrate(c sqlConn) error {
+	storeMigrations, err := loadStoreMigrations()
+	if err != nil {
+		return fmt.Errorf("store: load migrations: %w", err)
+	}
 	d, err := sow.New(sowConn{c: c})
 	if err != nil {
 		return fmt.Errorf("store: migrate init: %w", err)
 	}
-	if err := adoptLegacyVersion(c, d); err != nil {
+	if err := adoptLegacyVersion(c, d, storeMigrations); err != nil {
 		return err
 	}
 	if _, err := d.Up(storeMigrations, sow.Options{}); err != nil {
@@ -57,7 +55,7 @@ func migrate(c sqlConn) error {
 // (schema_version = N) has its first N steps marked applied so sow doesn't re-run them
 // (which would fail — "table records already exists"). It runs only when sow's ledger is
 // still empty; afterward sow_migrations is the source of truth and this is a no-op.
-func adoptLegacyVersion(c sqlConn, d *sow.DB) error {
+func adoptLegacyVersion(c sqlConn, d *sow.DB, storeMigrations []sow.Migration) error {
 	applied, err := d.AppliedVersions()
 	if err != nil {
 		return fmt.Errorf("store: read migration ledger: %w", err)
